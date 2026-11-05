@@ -34,8 +34,9 @@
  *    without them, then request URL, headers and payload, idempotent Vault
  *    credentials, the legacy-key fallback and a failing pg_net. Old
  *    dashboard webhooks to notify (a supabase_functions stand-in) are
- *    dropped; the notification triggers and webhooks to other URLs, such as
- *    notify-moderators, are not.
+ *    dropped, however libcurl lets their URL be spelled (scheme case, one
+ *    to three slashes); the notification triggers and webhooks to other
+ *    URLs, such as notify-moderators, are not.
  *
  * Exit code 0 means every migration applied and every check passed.
  */
@@ -1145,10 +1146,12 @@ async function internalCalls(db) {
   // A project set up from the old README also has dashboard webhooks to
   // notify: triggers running supabase_functions.http_request (a stand-in
   // here) with the URL as first argument. Applied there,
-  // …_drop_notify_webhooks.sql drops exactly those, also on a local stack
-  // or with a query string, and keeps webhooks to other functions such as
-  // notify-moderators, one that names notify only in a later argument and
-  // a call without arguments.
+  // …_drop_notify_webhooks.sql drops exactly those, also on a local stack,
+  // with a query string, an uppercase scheme, three slashes or one (pg_net's
+  // libcurl still posts those to notify), and keeps webhooks to other
+  // functions such as notify-moderators, one that names notify only in a
+  // later argument, one whose host is empty (libcurl reads "functions" as
+  // its host) and a call without arguments.
   const hallTriggers = async () => (await rows(db, 'postgres', null, `select tgname from pg_trigger
     where tgrelid in ('public.reactions'::regclass, 'public.comments'::regclass, 'public.feed_events'::regclass)
       and not tgisinternal`)).map((r) => r.tgname).sort();
@@ -1165,6 +1168,10 @@ async function internalCalls(db) {
     ${hook('comments', 'notify-comments', notify)}
     ${hook('feed_events', 'notify-milestones', notify)}
     ${hook('reactions', 'notify-reactions-local', 'http://host.docker.internal:54321/functions/v1/notify?via=studio')}
+    ${hook('reactions', 'notify-reactions-uppercase', notify.replace('https://', 'HTTPS://'))}
+    ${hook('comments', 'notify-comments-three-slashes', notify.replace('https://', 'https:///'))}
+    ${hook('feed_events', 'notify-milestones-one-slash', notify.replace('https://', 'https:/'))}
+    ${hook('feed_events', 'no-host-notify', 'https:///functions/v1/notify')}
     ${hook('reactions', 'audit-reactions', 'https://hooks.example.test/reactions')}
     ${hook('comments', 'notify-moderators', `${notify}-moderators`)}
     ${hook('comments', 'relay-to-notify', `https://relay.example.test/forward?to=${notify}`)}
@@ -1176,8 +1183,8 @@ async function internalCalls(db) {
   await db.exec(readFileSync(MIGRATIONS + DROP_NOTIFY_WEBHOOKS, 'utf8'));
   const afterDrop = await hallTriggers();
   const survivors = [
-    'audit-milestones', 'audit-reactions', 'http-request-without-arguments', 'mirror-notify', 'notify-moderators',
-    'relay-to-notify',
+    'audit-milestones', 'audit-reactions', 'http-request-without-arguments', 'mirror-notify', 'no-host-notify',
+    'notify-moderators', 'relay-to-notify',
   ];
   check('dashboard webhooks to notify are dropped; our triggers and webhooks to other URLs (notify-moderators) stay',
     afterDrop.join(',') === [...ownTriggers, ...survivors].sort().join(','),

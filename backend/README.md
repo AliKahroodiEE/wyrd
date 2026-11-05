@@ -165,12 +165,14 @@ old_record }`. No dashboard webhooks are needed. Earlier instructions had
 owners create three (INSERT on these tables → `/functions/v1/notify`);
 `…_drop_notify_webhooks.sql` removes them so pushes are not sent twice: only
 webhooks whose URL (the first `http_request` argument) has the path
-`/functions/v1/notify` right after its host, optionally followed by `/`, `?`
-or `#`; webhooks to
-other functions such as `notify-moderators`, and to other URLs, stay. Do not
-create new ones: the migration runs only once. A failing pg_net never fails
-the user's write. Other senders POST `{ user_id, category, template_key,
-params, guild_id? }` directly.
+`/functions/v1/notify` right after a non-empty host, optionally followed by
+`/`, `?` or `#`. The URL is read as pg_net's libcurl reads it: the scheme in
+any case (`HTTPS://`) and one to three slashes after it (`https:///…`, which
+the dashboard accepts). Webhooks to other functions such as
+`notify-moderators`, and to other URLs, stay. Do not create new ones: the
+migration runs only once. A failing pg_net never fails the user's write.
+Other senders POST `{ user_id, category, template_key, params, guild_id? }`
+directly.
 
 ## Flutter configuration
 
@@ -227,9 +229,10 @@ project's default privileges, which expose nothing) and drives
   (everything granted to all three roles) and requires identical privileges;
 * exercises pg_cron's dispatch and the notification triggers against
   stand-ins for pg_net and Vault (URL, headers, payload, failure isolation),
-  and checks that old dashboard webhooks to `notify` are dropped while the
-  triggers stay and webhooks to other URLs (`notify-moderators`, `notify`
-  named only in a later argument) and triggers without arguments survive (a
+  and checks that old dashboard webhooks to `notify` are dropped (also with
+  an uppercase scheme or one or three slashes) while the triggers stay and
+  webhooks to other URLs (`notify-moderators`, `notify` named only in a later
+  argument, an empty host) and triggers without arguments survive (a
   `supabase_functions` stand-in);
 * checks that reaction changes and deleted or hidden comments touch their
   feed event (`hall_changed_at`), and that `account_set_at` moves only when
