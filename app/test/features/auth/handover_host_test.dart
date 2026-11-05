@@ -91,7 +91,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('a question whose sign-in ended closes without signing anyone out', (tester) async {
+  testWidgets('a withdrawn question closes without signing anyone out', (tester) async {
     final (gateway, container) = await pump(tester);
     final question = Handover(previousEmail: 'arin@example.com', unsynced: 3);
     final answer = container.read(handoverProvider.notifier).ask(question);
