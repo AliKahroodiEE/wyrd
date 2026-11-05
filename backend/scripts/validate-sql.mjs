@@ -24,7 +24,9 @@
  *    A second database with the old platform defaults (everything granted
  *    to all three roles, no publication) must end with the same privileges.
  * 4. Runs smoke checks as the real roles: RLS isolation, sync_push LWW and
- *    idempotency, sync_pull cursors, apply_progression driven by the real
+ *    idempotency, sync_pull cursors and paging (a long history pulled in
+ *    small pages arrives whole, each page with the quests and evaluations
+ *    its rows need), apply_progression driven by the real
  *    TypeScript engine (idempotency, stale-day protection, privacy
  *    projection, challenges), undo, social RPCs, device tokens,
  *    export/deletion, cron jobs, and the guild hall's Realtime signals:
@@ -1088,6 +1090,170 @@ async function commentSignals(db) {
 }
 
 // ---------------------------------------------------------------------------
+// A long history pulled in pages (…_sync_pull_self_contained_pages.sql)
+// ---------------------------------------------------------------------------
+
+// sync_pull pages every pulled table together by change_id, and each edit
+// gives a row a new one: a quest edited after it was done comes after its
+// subtask, completions and their evaluations. A new device pulls all of it
+// from cursor 0 and applies each page like the app (sync_service.dart,
+// _pull): quests first, then subtasks and completions, which need their
+// quest (local foreign keys); a completion's proposal, with the reason shown
+// for each grant, is read only from an evaluation in the same page.
+const VETERAN = '00000000-0000-4000-8000-000000000201';
+const SCALES = '10000000-0000-4000-8000-000000000201';
+const RUN = '10000000-0000-4000-8000-000000000202';
+const SCALES_STEP = '20000000-0000-4000-8000-000000000201';
+const SCALES_DONE = [1, 2, 3].map((n) => `30000000-0000-4000-8000-00000000020${n}`);
+const RUN_DONE = '30000000-0000-4000-8000-000000000204';
+
+async function pagedPull(db) {
+  await db.query(`insert into auth.users (id, email) values ($1, 'veteran@example.test')`, [VETERAN]);
+  const t0 = Date.parse('2026-11-04T05:00:00.000Z');
+  const created = new Date(Date.now() - 24 * 3600e3).toISOString();
+  const done = new Date(Date.now() - 2 * 3600e3).toISOString();
+  // Scales has a subtask; the run only completions.
+  await one(db, 'authenticated', VETERAN, 'select public.sync_push($1) as r', [[
+    { entity: 'quest', op: 'upsert', id: SCALES, hlc: hlc(t0, 0, 'devV'),
+      payload: { title: 'Practise scales 20m', tier: 'daily', category: 'creative', created_at: created } },
+    { entity: 'quest', op: 'upsert', id: RUN, hlc: hlc(t0, 1, 'devV'),
+      payload: { title: 'Morning run 30m', tier: 'daily', category: 'fitness', created_at: created } },
+    { entity: 'subtask', op: 'upsert', id: SCALES_STEP, hlc: hlc(t0, 2, 'devV'),
+      payload: { quest_id: SCALES, title: 'Major scales', position: 1 } },
+    ...[...SCALES_DONE, RUN_DONE].map((id, i) => ({ entity: 'completion', op: 'insert', id, hlc: hlc(t0, 3 + i, 'devV'),
+      payload: { quest_id: id === RUN_DONE ? RUN : SCALES, completed_at: done, declared_minutes: 20 } })),
+  ]]);
+  for (const id of [...SCALES_DONE, RUN_DONE]) await evaluateAndApply(db, id);
+  // An evaluation changed after its completion's result comes after it.
+  // Nothing does that today; a later clean-up of old evaluations would.
+  await db.query('update public.evaluations set latency_ms = latency_ms where completion_id = $1', [SCALES_DONE[1]]);
+  // Then both quests are edited, which makes them the account's newest rows.
+  await one(db, 'authenticated', VETERAN, 'select public.sync_push($1) as r', [[
+    { entity: 'quest', op: 'upsert', id: SCALES, hlc: hlc(t0 + 60e3, 0, 'devV'), payload: { title: 'Practise scales 25m' } },
+    { entity: 'quest', op: 'upsert', id: RUN, hlc: hlc(t0 + 60e3, 1, 'devV'), payload: { title: 'Morning run 40m' } },
+  ]]);
+
+  // Every row sync_pull serves this account, oldest first; ref is the quest
+  // of a subtask or completion and the completion of an evaluation.
+  const history = await rows(db, 'postgres', null, `
+    select entity, change_id, id, ref from (
+      select 'profiles' as entity, change_id, id, null::uuid as ref from public.profiles where id = $1
+      union all select 'characters', change_id, id, null from public.characters where owner_id = $1
+      union all select 'quests', change_id, id, null from public.quests where owner_id = $1
+      union all select 'subtasks', change_id, id, quest_id from public.subtasks where owner_id = $1
+      union all select 'completions', change_id, id, quest_id from public.completions where owner_id = $1
+      union all select 'evaluations', change_id, id, completion_id from public.evaluations where owner_id = $1
+      union all select 'ledger_entries', change_id, id, null from public.ledger_entries where owner_id = $1
+      union all select 'achievements', change_id, null, null from public.achievements where owner_id = $1
+      union all select 'day_stats', change_id, null, null from public.day_stats where owner_id = $1
+      union all select 'chronicles', change_id, id, null from public.chronicles where owner_id = $1
+      union all select 'notification_prefs', change_id, null, null from public.notification_prefs where user_id = $1
+    ) t order by change_id`, [VETERAN]);
+  const key = (entity, changeId) => `${entity}:${changeId}`;
+  const questRow = (id) => history.find((r) => r.entity === 'quests' && r.id === id).change_id;
+  const evaluationOf = new Map(history.filter((r) => r.entity === 'evaluations').map((r) => [r.ref, r]));
+
+  // Walks every page from cursor 0, at most one page per row: a page that did
+  // not move on would otherwise loop forever.
+  const walk = async (size) => {
+    const pages = [];
+    for (let cursor = 0; pages.length <= history.length;) {
+      const page = (await one(db, 'authenticated', VETERAN, 'select public.sync_pull($1, $2) as r', [cursor, size])).r;
+      const sent = Object.entries(page.changes).flatMap(([entity, list]) => list.map((row) => ({ entity, row })));
+      pages.push({ from: cursor, page, sent });
+      if (!page.has_more) break;
+      cursor = page.cursor;
+    }
+    return pages;
+  };
+  // Pages small enough that the first ends on the first evaluation: it holds
+  // the subtask but neither quest, and the second starts with the completion
+  // that evaluation belongs to. And one page with everything.
+  const size = history.findIndex((r) => r.entity === 'evaluations') + 1;
+  const pages = await walk(size);
+  const whole = await walk(history.length);
+
+  // A page's own rows are the next `size` after its cursor; they alone set
+  // cursor and has_more. Anything else it sends is a quest one of them needs
+  // from a later page or the evaluation of one of its completions from
+  // outside the page, and no row is sent twice.
+  const pageProblems = (walked, size) => walked.flatMap(({ from, page, sent }, i) => {
+    const after = history.filter((r) => r.change_id > from);
+    const own = after.slice(0, size);
+    const ownKeys = new Set(own.map((r) => key(r.entity, r.change_id)));
+    const sentKeys = sent.map(({ entity, row }) => key(entity, row.change_id));
+    const last = own.at(-1)?.change_id ?? from;
+    const questIds = new Set(own.filter((r) => r.entity === 'subtasks' || r.entity === 'completions').map((r) => r.ref));
+    const completionIds = new Set(own.filter((r) => r.entity === 'completions').map((r) => r.id));
+    const unexpected = sent.filter(({ entity, row }) => !ownKeys.has(key(entity, row.change_id))
+      && !(entity === 'quests' && questIds.has(row.id) && row.change_id > last)
+      && !(entity === 'evaluations' && completionIds.has(row.completion_id)
+           && (row.change_id <= from || row.change_id > last)));
+    const unsent = own.filter((r) => !sentKeys.includes(key(r.entity, r.change_id)));
+    const twice = sentKeys.filter((k, j) => sentKeys.indexOf(k) !== j);
+    const ok = page.cursor === last && page.has_more === after.length > size
+      && unsent.length === 0 && unexpected.length === 0 && twice.length === 0;
+    return ok ? [] : [`${size}-row page ${i + 1} after ${from}: cursor ${page.cursor} (own rows end at ${last}), `
+      + `has_more ${page.has_more}, unsent ${unsent.map((r) => key(r.entity, r.change_id)).join(',') || 'none'}, `
+      + `unexpected ${unexpected.map(({ entity, row }) => key(entity, row.change_id)).join(',') || 'none'}, `
+      + `twice ${twice.join(',') || 'none'}`];
+  });
+  const problems = [...pageProblems(pages, size), ...pageProblems(whole, history.length)];
+  check('each sync_pull page\'s cursor and has_more come from its own rows; it adds only the quests and evaluations they need, once',
+    problems.length === 0, problems.join('; ') || `${pages.length} pages of ${size} rows, and one of ${history.length}`);
+
+  const delivered = new Set(pages.flatMap(({ sent }) => sent.map(({ entity, row }) => key(entity, row.change_id))));
+  const lost = history.filter((r) => !delivered.has(key(r.entity, r.change_id)));
+  check('sync_pull in small pages delivers every row and ends',
+    pages.at(-1).page.has_more === false && lost.length === 0 && pages.length === Math.ceil(history.length / size),
+    lost.map((r) => key(r.entity, r.change_id)).join(', ') || `${history.length} rows in ${pages.length} pages`);
+
+  // The app's rule: a subtask or completion needs its quest from its own page
+  // or an earlier one, else it is dropped while the cursor moves past it.
+  const known = new Set();
+  const orphans = [];
+  for (const [i, { sent }] of pages.entries()) {
+    for (const { entity, row } of sent) if (entity === 'quests') known.add(row.id);
+    for (const { entity, row } of sent) {
+      if ((entity === 'subtasks' || entity === 'completions') && !known.has(row.quest_id)) {
+        orphans.push(`page ${i + 1}: ${entity} ${row.id}`);
+      }
+    }
+  }
+  // Scales comes in page 1, with its subtask; the run, which has no
+  // subtask, with its completion. Both in their edited version.
+  const pageWith = (entity, id) => pages.findIndex(({ sent }) => sent.some((s) => s.entity === entity && s.row.id === id));
+  const brings = (i, id, title) => pages[i]?.sent.some(({ entity, row }) =>
+    entity === 'quests' && row.id === id && row.title === title);
+  const [stepPage, runPage] = [pageWith('subtasks', SCALES_STEP), pageWith('completions', RUN_DONE)];
+  check('a sync_pull page with subtasks or completions of a quest edited later brings that quest too',
+    stepPage === 0 && questRow(SCALES) > pages[0].page.cursor && brings(0, SCALES, 'Practise scales 25m')
+      && runPage >= 0 && questRow(RUN) > pages[runPage].page.cursor && brings(runPage, RUN, 'Morning run 40m')
+      && orphans.length === 0,
+    orphans.join('; ') || `page 1 ends at ${pages[0].page.cursor} (Scales: ${questRow(SCALES)}), `
+      + `page ${runPage + 1} at ${pages[runPage]?.page.cursor} (the run: ${questRow(RUN)})`);
+
+  // The app reads a completion's proposal only from an evaluation in the
+  // same page. One evaluation lies in the page before its completion's, one
+  // (changed later) in a page after it.
+  const unexplained = [];
+  let [earlier, later] = [0, 0];
+  for (const [i, { from, page, sent }] of pages.entries()) {
+    const evaluated = new Set(sent.filter(({ entity }) => entity === 'evaluations').map(({ row }) => row.completion_id));
+    for (const { entity, row } of sent) {
+      const evaluation = entity === 'completions' ? evaluationOf.get(row.id) : undefined;
+      if (evaluation === undefined) continue;
+      if (evaluation.change_id <= from) earlier++;
+      if (evaluation.change_id > page.cursor) later++;
+      if (!evaluated.has(row.id)) unexplained.push(`page ${i + 1}: completion ${row.id}`);
+    }
+  }
+  check('a sync_pull page with a completion brings its evaluation, also from an earlier or a later page',
+    earlier > 0 && later > 0 && unexplained.length === 0,
+    unexplained.join('; ') || `${earlier} from an earlier page, ${later} from a later one`);
+}
+
+// ---------------------------------------------------------------------------
 // Internal Edge Function calls (…_cron_secret_key.sql, …_notify_triggers.sql)
 // ---------------------------------------------------------------------------
 
@@ -1311,6 +1477,11 @@ async function main() {
     await commentSignals(db);
   } catch (error) {
     check('comment signal checks completed', false, String(error?.message ?? error));
+  }
+  try {
+    await pagedPull(db);
+  } catch (error) {
+    check('paged pull checks completed', false, String(error?.message ?? error));
   }
 
   console.log('Internal calls (pg_cron and notification triggers through pg_net)');
