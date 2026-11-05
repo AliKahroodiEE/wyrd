@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:ui' show Locale;
 
-import 'package:drift/drift.dart' show DatabaseConnection;
+import 'package:drift/drift.dart' show ApplyInterceptor, DatabaseConnection, QueryExecutor, QueryInterceptor;
 import 'package:drift/native.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -49,6 +49,22 @@ class _RetryLater extends Fake implements RemoteApi {
 
   @override
   Future<void> updateNotificationPrefs(Map<String, Object?> prefs) async {}
+}
+
+/// Runs [beforeEmail] once, right before sync reads the email of the account
+/// the device belongs to: the last thing it reads before it asks.
+class _Reads extends QueryInterceptor {
+  Future<void> Function()? beforeEmail;
+
+  @override
+  Future<List<Map<String, Object?>>> runSelect(QueryExecutor executor, String statement, List<Object?> args) async {
+    final run = beforeEmail;
+    if (run != null && args.contains('sync_owner_email')) {
+      beforeEmail = null;
+      await run();
+    }
+    return super.runSelect(executor, statement, args);
+  }
 }
 
 const _userA = User(
@@ -122,6 +138,7 @@ void main() {
   );
 
   group('signing in where another account left its data', () {
+    late _Reads reads;
     late AppDatabase db;
     late MemoryKeyStore keys;
     late AiSettingsRepository ai;
@@ -130,7 +147,10 @@ void main() {
     late ProviderContainer container;
 
     setUp(() async {
-      db = AppDatabase(DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
+      reads = _Reads();
+      db = AppDatabase(
+        DatabaseConnection(NativeDatabase.memory().interceptWith(reads), closeStreamsSynchronously: true),
+      );
       addTearDown(db.close);
       // The device belongs to owner-c, whose AI provider and key are here.
       keys = MemoryKeyStore()..value = 'sk-c';
@@ -222,6 +242,21 @@ void main() {
       // The web app's tabs share this database: Remove was chosen in another.
       await SyncService(db, _NoServer(), ProgressionRepository(db)).claimFor(_userA.id, email: _userA.email);
       await pumpEventQueue();
+      expect(question.withdrawn, isTrue);
+      expect(await question.answer, isFalse);
+      expect(container.read(handoverProvider), isNull);
+    });
+
+    test('a claim another tab made just before the question was asked withdraws it too', () async {
+      await leaveUnsynced();
+      // Remove was chosen in another tab while this one read what to ask
+      // about, before it listened for claims: it never hears of that one.
+      reads.beforeEmail = () =>
+          SyncService(db, _NoServer(), ProgressionRepository(db)).claimFor(_userA.id, email: _userA.email);
+      users.add(_userA);
+      final question = await _asked(container);
+      await pumpEventQueue();
+      expect(await device.owner(), _userA.id);
       expect(question.withdrawn, isTrue);
       expect(await question.answer, isFalse);
       expect(container.read(handoverProvider), isNull);
