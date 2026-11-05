@@ -107,16 +107,21 @@ class HandoverNotifier extends Notifier<Handover?> {
 /// The app's one [SyncControl].
 final syncControlProvider = Provider<SyncControl>((ref) => SyncControl());
 
+/// The server sync talks to, or null in a build without a backend.
+final syncApiProvider = Provider<RemoteApi?>((ref) {
+  final client = ref.watch(supabaseClientProvider);
+  return client == null ? null : SupabaseRemoteApi(client);
+});
+
 /// Runs sync while a user is signed in: at sign-in, shortly after every
 /// local change, and every two minutes (ADR-003). Network failures are
 /// silent and retried; the app keeps working locally.
 final syncCoordinatorProvider = Provider<void>((ref) {
   final user = ref.watch(currentUserProvider).value;
-  final client = ref.watch(supabaseClientProvider);
-  if (user == null || client == null) return;
+  final api = ref.watch(syncApiProvider);
+  if (user == null || api == null) return;
 
   final db = ref.watch(databaseProvider);
-  final api = SupabaseRemoteApi(client);
   final ai = ref.read(aiSettingsRepositoryProvider);
   final service = SyncService(
     db,
@@ -188,7 +193,13 @@ final syncCoordinatorProvider = Provider<void>((ref) {
     }
   }
 
-  final sub = db.tableUpdates(TableUpdateQuery.onAllTables([db.outboxEntries])).listen((_) {
+  // A local change adds an outbox entry (QuestRepository and
+  // ProgressionRepository only ever insert). Sync's own bookkeeping updates
+  // and deletes entries, as does a wipe; reacting to that would resend a
+  // change the server keeps asking to retry every 2 s, for good. It waits
+  // for the next cycle instead.
+  final localChanges = TableUpdateQuery.onTable(db.outboxEntries, limitUpdateKind: UpdateKind.insert);
+  final sub = db.tableUpdates(localChanges).listen((_) {
     debounce?.cancel();
     debounce = Timer(const Duration(seconds: 2), () => unawaited(run()));
   });

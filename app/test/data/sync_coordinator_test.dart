@@ -3,6 +3,7 @@ import 'dart:ui' show Locale;
 
 import 'package:drift/drift.dart' show DatabaseConnection;
 import 'package:drift/native.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show AuthClientOptions, SupabaseClient, User;
@@ -21,6 +22,34 @@ import 'package:wyrd/data/sync/sync_service.dart';
 
 /// Never called: claiming the device needs no server.
 class _NoServer extends Fake implements RemoteApi {}
+
+/// Asks to retry every change later, as the server does for a completion
+/// whose quest it never got.
+class _RetryLater extends Fake implements RemoteApi {
+  /// The ids each push carried.
+  final pushes = <List<Object?>>[];
+
+  @override
+  Future<List<Map<String, Object?>>> push(List<Map<String, Object?>> changes) async {
+    pushes.add([for (final c in changes) c['id']]);
+    return [
+      for (final c in changes) {'id': c['id'], 'status': 'rejected', 'reason': 'missing_reference', 'retryable': true},
+    ];
+  }
+
+  @override
+  Future<Map<String, Object?>> pull(int cursor) async => {
+    'cursor': cursor,
+    'has_more': false,
+    'changes': const <String, Object?>{},
+  };
+
+  @override
+  Future<void> updateProfile(Map<String, Object?> fields) async {}
+
+  @override
+  Future<void> updateNotificationPrefs(Map<String, Object?> prefs) async {}
+}
 
 const _userA = User(
   id: '00000000-0000-4000-8000-00000000000a',
@@ -43,6 +72,55 @@ Future<Handover> _asked(ProviderContainer container) {
 }
 
 void main() {
+  // Plain tests only in this file: with a Flutter binding, each cycle's
+  // time zone lookup would wait on the platform, which fake time never
+  // answers. Without one it fails at once and is left out.
+  test(
+    'a change the server keeps asking to retry waits for the next cycle; a new one goes up 2 s after it is made',
+    () {
+      fakeAsync((time) {
+        final db = AppDatabase(DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
+        final server = _RetryLater();
+        final users = StreamController<User?>();
+        final container = ProviderContainer.test(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            syncApiProvider.overrideWithValue(server),
+            aiSettingsRepositoryProvider.overrideWithValue(AiSettingsRepository(db, MemoryKeyStore())),
+            currentUserProvider.overrideWith((ref) => users.stream),
+            regionalProvider.overrideWithValue(_english),
+          ],
+        );
+        try {
+          container.listen(syncCoordinatorProvider, (_, _) {});
+          final quests = QuestRepository(db);
+          late Quest refused, later;
+          unawaited(quests.create(const QuestDraft(title: 'Refused for now')).then((q) => refused = q));
+          time.flushMicrotasks();
+
+          users.add(_userA);
+          time.elapse(const Duration(seconds: 10));
+          // Counting the refusal is not a local change: no new cycle for it.
+          expect(server.pushes, [
+            [refused.id],
+          ]);
+
+          unawaited(quests.create(const QuestDraft(title: 'Made later')).then((q) => later = q));
+          time.elapse(const Duration(milliseconds: 1900));
+          expect(server.pushes, hasLength(1));
+          time.elapse(const Duration(milliseconds: 200));
+          expect(server.pushes, hasLength(2));
+          expect(server.pushes.last, [refused.id, later.id]);
+        } finally {
+          container.dispose();
+          unawaited(users.close());
+          unawaited(db.close());
+          time.flushMicrotasks();
+        }
+      });
+    },
+  );
+
   group('the question about another account\'s unsynced work', () {
     late AppDatabase db;
     late MemoryKeyStore keys;
