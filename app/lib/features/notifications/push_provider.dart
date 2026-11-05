@@ -11,7 +11,8 @@ import 'push_platform.dart';
 import 'push_service.dart';
 
 /// This device's push registration. Inert unless the build is configured for
-/// both Supabase and Firebase; Firebase itself starts only once someone signs in.
+/// both Supabase and Firebase; Firebase itself starts only once someone signs
+/// in, or to invalidate a token an account left on the device.
 final pushServiceProvider = Provider<PushService>((ref) {
   final client = ref.watch(supabaseClientProvider);
   final service = PushService(
@@ -19,7 +20,7 @@ final pushServiceProvider = Provider<PushService>((ref) {
         ? FirebasePushMessaging(start: PushConfig.start, channel: () => _channelLabels(ref))
         : null,
     registry: client == null ? null : SupabasePushRegistry(client),
-    prompts: PrefsPushPromptLog(),
+    log: PrefsPushDeviceLog(),
     platform: PushConfig.platform,
     promptOnSettingsOpen: !kIsWeb,
   );
@@ -32,7 +33,10 @@ final pushServiceProvider = Provider<PushService>((ref) {
     shown.cancel();
     opened.cancel();
   });
-  ref.listen(currentUserProvider, (_, user) => service.setUser(user.value?.id), fireImmediately: true);
+  // Not while the session loads: a signed-in launch would pass for a signed-out one.
+  ref.listen(currentUserProvider, (_, user) {
+    if (user.hasValue) service.setUser(user.value?.id);
+  }, fireImmediately: true);
   ref.listen(
     profileProvider.select(
       (p) => switch (p.value) {
@@ -48,19 +52,54 @@ final pushServiceProvider = Provider<PushService>((ref) {
 
 /// Keeps push running for as long as the app runs, so tokens stay
 /// registered, refreshed and retired all session, not only while Settings
-/// is open. `main()` wraps the app in it. Builds without push skip it, and
-/// nothing here waits on Firebase, so the first frame is never held up.
-class PushHost extends ConsumerWidget {
-  const PushHost({required this.child, super.key});
+/// is open, and tells it when the app returns to the foreground, where a
+/// token left to invalidate is tried again. `main()` wraps the app in it.
+/// Builds without push skip it, and nothing here waits on Firebase, so the
+/// first frame is never held up.
+class PushHost extends ConsumerStatefulWidget {
+  const PushHost({required this.child, this.configured, super.key});
 
   final Widget child;
 
+  /// Whether this build has push; [PushConfig.isConfigured] when null (tests
+  /// set it).
+  final bool? configured;
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (PushConfig.isConfigured) {
+  ConsumerState<PushHost> createState() => _PushHostState();
+}
+
+class _PushHostState extends ConsumerState<PushHost> {
+  AppLifecycleListener? _lifecycle;
+
+  bool get _configured => widget.configured ?? PushConfig.isConfigured;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_configured) _lifecycle = AppLifecycleListener(onResume: _resumed);
+  }
+
+  @override
+  void dispose() {
+    _lifecycle?.dispose();
+    super.dispose();
+  }
+
+  void _resumed() {
+    try {
+      ref.read(pushServiceProvider).resumed();
+    } on Object catch (error) {
+      debugPrint('Push not started: $error');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_configured) {
       ref.listen(pushServiceProvider, (_, _) {}, onError: (error, _) => debugPrint('Push not started: $error'));
     }
-    return child;
+    return widget.child;
   }
 }
 

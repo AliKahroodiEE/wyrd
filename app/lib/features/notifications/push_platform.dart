@@ -147,16 +147,23 @@ class SupabasePushRegistry implements PushRegistry {
   Future<void> unregister(String token) => _client.rpc<void>('unregister_push_token', params: {'token': token});
 }
 
-/// [PushPromptLog] in this device's preferences.
-class PrefsPushPromptLog implements PushPromptLog {
+/// [PushDeviceLog] in this device's preferences.
+class PrefsPushDeviceLog implements PushDeviceLog {
   // Created on first use: only builds with push ever touch the preferences.
   late final _prefs = SharedPreferencesAsync();
 
-  static String _key(String userId) => 'push.asked.$userId';
+  static String _askedKey(String userId) => 'push.asked.$userId';
+  static const _retireKey = 'push.retirePending';
 
   @override
-  Future<bool> wasAsked(String userId) async => await _prefs.getBool(_key(userId)) ?? false;
+  Future<bool> wasAsked(String userId) async => await _prefs.getBool(_askedKey(userId)) ?? false;
 
   @override
-  Future<void> markAsked(String userId) => _prefs.setBool(_key(userId), true);
+  Future<void> markAsked(String userId) => _prefs.setBool(_askedKey(userId), true);
+
+  @override
+  Future<bool> retirePending() async => await _prefs.getBool(_retireKey) ?? false;
+
+  @override
+  Future<void> setRetirePending(bool pending) => pending ? _prefs.setBool(_retireKey, true) : _prefs.remove(_retireKey);
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show SocketException;
 
 import 'package:firebase_core/firebase_core.dart' show FirebaseException;
 import 'package:flutter/material.dart';
@@ -28,7 +29,12 @@ class FakeMessaging implements PushMessaging {
 
   /// Makes [deleteToken] finish only after this long.
   Duration? deleteDelay;
+
+  /// Thrown by [deleteToken], as where FCM cannot be reached (offline).
+  Object? deleteError;
   int prompts = 0;
+
+  /// Tokens invalidated: [deleteToken] calls that went through.
   int deletions = 0;
 
   /// Calls of any kind; the real transport starts Firebase on the first one.
@@ -73,6 +79,8 @@ class FakeMessaging implements PushMessaging {
   Future<void> deleteToken() async {
     calls++;
     if (deleteDelay case final delay?) await Future<void>.delayed(delay);
+    final error = deleteError;
+    if (error != null) throw error;
     deletions++;
     currentToken = 'token-${deletions + 1}'; // FCM issues a fresh one next time.
   }
@@ -91,21 +99,46 @@ class FakeRegistry implements PushRegistry {
   final registered = <(String, String)>[];
   final unregistered = <String>[];
 
-  @override
-  Future<void> register(String token, String platform) async => registered.add((token, platform));
+  /// Makes every call fail, as without a network.
+  bool offline = false;
+
+  /// Makes every call wait for good, as on a connection that never answers.
+  bool hangs = false;
+
+  Future<void> _reach() async {
+    if (hangs) await Completer<void>().future;
+    if (offline) throw const SocketException('Failed host lookup');
+  }
 
   @override
-  Future<void> unregister(String token) async => unregistered.add(token);
+  Future<void> register(String token, String platform) async {
+    await _reach();
+    registered.add((token, platform));
+  }
+
+  @override
+  Future<void> unregister(String token) async {
+    await _reach();
+    unregistered.add(token);
+  }
 }
 
-class FakePromptLog implements PushPromptLog {
+/// Lives on the device, so it outlasts a [PushService] (see `relaunch`).
+class FakeDeviceLog implements PushDeviceLog {
   final asked = <String>{};
+  bool retire = false;
 
   @override
   Future<bool> wasAsked(String userId) async => asked.contains(userId);
 
   @override
   Future<void> markAsked(String userId) async => asked.add(userId);
+
+  @override
+  Future<bool> retirePending() async => retire;
+
+  @override
+  Future<void> setRetirePending(bool pending) async => retire = pending;
 }
 
 const _both = PushPreferences(guild: true, weekly: true);
@@ -132,7 +165,7 @@ final _pushServiceError = Exception('AbortError: Registration failed - push serv
 void main() {
   late FakeMessaging messaging;
   late FakeRegistry registry;
-  late FakePromptLog prompts;
+  late FakeDeviceLog deviceLog;
   late PushService push;
   final live = <PushService>[];
 
@@ -145,11 +178,19 @@ void main() {
     PushService(
       messaging: messaging,
       registry: registry,
-      prompts: prompts,
+      log: deviceLog,
       platform: platform,
       promptOnSettingsOpen: promptOnSettingsOpen,
     ),
   );
+
+  /// The app closed and opened again: Firebase and the device log keep what
+  /// they had, the service starts from nothing.
+  PushService relaunch() {
+    live.remove(push);
+    push.dispose();
+    return create();
+  }
 
   /// Lets stream events reach the service, then waits for its updates.
   Future<void> settle() async {
@@ -160,7 +201,7 @@ void main() {
   setUp(() {
     messaging = FakeMessaging();
     registry = FakeRegistry();
-    prompts = FakePromptLog();
+    deviceLog = FakeDeviceLog();
   });
 
   tearDown(() {
@@ -278,7 +319,7 @@ void main() {
     });
 
     test('builds without Firebase stay inert', () async {
-      keep(PushService(messaging: null, registry: registry, prompts: prompts, platform: 'android'))
+      keep(PushService(messaging: null, registry: registry, log: deviceLog, platform: 'android'))
         ..setUser('u1')
         ..setPreferences(_both);
       await push.enable();
@@ -507,6 +548,202 @@ void main() {
     });
   });
 
+  group('a token that could not be invalidated at sign-out', () {
+    /// u1 has push on this device and signs out offline: neither the server
+    /// row nor the token can be removed, so u1's pushes would keep coming.
+    Future<void> signOutOffline(Future<void> Function() settle) async {
+      messaging.current = PushPermission.granted;
+      create()
+        ..setUser('u1')
+        ..setPreferences(_both);
+      await settle();
+      expect(registry.registered, [('token-1', 'android')]);
+
+      messaging.deleteError = _offlinePhone;
+      registry.offline = true;
+      unawaited(push.beforeSignOut());
+      push.setUser(null);
+      await settle();
+      expect(messaging.deletions, 0);
+      expect(registry.unregistered, isEmpty);
+      expect(deviceLog.retire, isTrue, reason: 'kept to try again');
+      expect(push.status.value, PushStatus.hidden);
+    }
+
+    void backOnline() {
+      messaging.deleteError = null;
+      registry.offline = false;
+    }
+
+    test('is invalidated once the app is back in the foreground online', () async {
+      await signOutOffline(settle);
+
+      push.resumed(); // Still offline.
+      await settle();
+      expect(messaging.deletions, 0);
+      expect(deviceLog.retire, isTrue);
+
+      backOnline();
+      push.resumed();
+      await settle();
+      expect(messaging.deletions, 1);
+      expect(deviceLog.retire, isFalse);
+
+      push.resumed();
+      await push.settingsOpened();
+      await settle();
+      expect(messaging.deletions, 1, reason: 'once is enough');
+    });
+
+    test('is invalidated at the next launch', () async {
+      await signOutOffline(settle);
+      backOnline();
+
+      relaunch()
+        ..setUser(null)
+        ..setPreferences(_both);
+      await settle();
+      expect(messaging.deletions, 1);
+      expect(deviceLog.retire, isFalse);
+      expect(push.status.value, PushStatus.hidden);
+
+      relaunch()
+        ..setUser(null)
+        ..setPreferences(_both);
+      await settle();
+      expect(messaging.deletions, 1, reason: 'once is enough');
+    });
+
+    test('is invalidated even with notifications since turned off for the app', () async {
+      await signOutOffline(settle);
+      messaging.current = PushPermission.blocked; // The token stays valid all the same.
+      backOnline();
+
+      push.resumed();
+      await settle();
+      expect(messaging.deletions, 1);
+      expect(deviceLog.retire, isFalse);
+    });
+
+    test('is not tried again on a device that can never have a token', () async {
+      messaging.current = PushPermission.granted;
+      create().setUser('u1'); // The profile never loaded, so nothing registered.
+      await settle();
+      messaging.deleteError = _noPlayServices;
+      push.setUser(null);
+      await settle();
+      expect(deviceLog.retire, isFalse, reason: 'no token to invalidate');
+
+      final calls = messaging.calls;
+      push.resumed();
+      relaunch().setUser(null);
+      await settle();
+      expect(messaging.calls, calls);
+    });
+
+    test('a sign-in before the retry keeps its token', () async {
+      await signOutOffline(settle);
+      backOnline();
+
+      // Back in the app, where u2 signs in before the retry has run.
+      push
+        ..resumed()
+        ..setUser('u2');
+      await settle();
+      expect(messaging.deletions, 0);
+      expect(registry.registered.last, ('token-1', 'android'), reason: 'the server moves the token to u2');
+      expect(push.status.value, PushStatus.on);
+
+      push.resumed();
+      await settle();
+      expect(messaging.deletions, 0, reason: 'u2 wants push here');
+
+      // The next launch: the profile loads before the session, which is u2's.
+      relaunch().setPreferences(_both);
+      await settle();
+      push.setUser('u2');
+      await settle();
+      expect(messaging.deletions, 0);
+      expect(push.status.value, PushStatus.on);
+    });
+
+    test('a guest device that never had push still never starts Firebase', () async {
+      create()
+        ..setUser(null)
+        ..setPreferences(_both);
+      push.resumed();
+      await push.settingsOpened();
+      await settle();
+      expect(messaging.calls, 0);
+      expect(messaging.listened, isFalse);
+    });
+
+    test('once invalidated, later launches signed out leave Firebase alone', () async {
+      messaging.current = PushPermission.granted;
+      create()
+        ..setUser('u1')
+        ..setPreferences(_both);
+      await settle();
+      push.setUser(null); // Online: invalidated at once.
+      await settle();
+      expect(messaging.deletions, 1);
+      expect(deviceLog.retire, isFalse);
+
+      final calls = messaging.calls;
+      relaunch()
+        ..setUser(null)
+        ..setPreferences(_both);
+      push.resumed();
+      await settle();
+      expect(messaging.calls, calls);
+    });
+
+    // Widget tests for their fake clock.
+    testWidgets('a retry that answers late leaves a newer sign-in a working token', (tester) async {
+      await signOutOffline(tester.pump);
+      backOnline();
+      messaging.deleteDelay = const Duration(seconds: 46); // FCM answers, slowly.
+
+      push.resumed();
+      await tester.pump();
+      push.setUser('u2'); // Signs in while the retry waits.
+      await tester.pump(const Duration(seconds: 45));
+      expect(registry.registered.last, ('token-1', 'android'), reason: 'the retry was given up on, so u2 went ahead');
+      expect(push.status.value, PushStatus.on);
+
+      await tester.pump(const Duration(seconds: 1)); // The invalidation goes through.
+      await tester.pump();
+      expect(messaging.deletions, 1);
+      expect(deviceLog.retire, isFalse);
+      expect(registry.registered.last, ('token-2', 'android'), reason: 'u2 registers the token FCM issues next');
+      expect(push.status.value, PushStatus.on);
+    });
+
+    testWidgets('a launch retries a sign-out the app was closed in the middle of', (tester) async {
+      messaging.current = PushPermission.granted;
+      create()
+        ..setUser('u1')
+        ..setPreferences(_both);
+      await tester.pump();
+
+      registry.hangs = true; // The server never answers.
+      unawaited(push.beforeSignOut());
+      push.setUser(null); // Signed out on the device after 5 s; then the app is closed.
+      await tester.pump(const Duration(seconds: 5));
+      expect(messaging.deletions, 0);
+      expect(deviceLog.retire, isTrue, reason: 'noted before waiting on the server');
+
+      relaunch()
+        ..setUser(null)
+        ..setPreferences(_both);
+      await tester.pump();
+      expect(messaging.deletions, 1);
+      expect(deviceLog.retire, isFalse);
+
+      await tester.pump(const Duration(seconds: 45)); // The closed app's step runs out.
+    });
+  });
+
   group('asking', () {
     test('the first Settings visit asks once per account where no tap is needed', () async {
       create(promptOnSettingsOpen: true)
@@ -536,7 +773,7 @@ void main() {
     });
 
     test('another account on the same device is asked on its own first visit', () async {
-      prompts.asked.add('u1');
+      deviceLog.asked.add('u1');
       create(promptOnSettingsOpen: true)
         ..setUser('u2')
         ..setPreferences(_both);
@@ -882,5 +1119,42 @@ void main() {
       ),
     );
     expect(find.text('app'), findsOneWidget);
+  });
+
+  testWidgets('PushHost tells push when the app is back in the foreground', (tester) async {
+    messaging.current = PushPermission.granted;
+    create()
+      ..setUser('u1')
+      ..setPreferences(_both);
+    await tester.pump();
+    messaging.deleteError = _offlinePhone;
+    push.setUser(null); // Signed out offline.
+    await tester.pump();
+    expect(deviceLog.retire, isTrue);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [pushServiceProvider.overrideWithValue(push)],
+        child: const PushHost(configured: true, child: SizedBox()),
+      ),
+    );
+    messaging.deleteError = null;
+    // Away from the app while the network comes back, then back in it.
+    for (final state in [
+      AppLifecycleState.inactive,
+      AppLifecycleState.hidden,
+      AppLifecycleState.paused,
+      AppLifecycleState.hidden,
+      AppLifecycleState.inactive,
+    ]) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+    }
+    await tester.pump();
+    expect(messaging.deletions, 0, reason: 'not back yet');
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(messaging.deletions, 1);
+    expect(deviceLog.retire, isFalse);
   });
 }
