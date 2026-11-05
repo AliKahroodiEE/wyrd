@@ -121,7 +121,7 @@ void main() {
     },
   );
 
-  group('the question about another account\'s unsynced work', () {
+  group('signing in where another account left its data', () {
     late AppDatabase db;
     late MemoryKeyStore keys;
     late AiSettingsRepository ai;
@@ -170,7 +170,19 @@ void main() {
       expect(keys.value, 'sk-c');
     }
 
-    test('is withdrawn when its sign-in ends, and nothing is removed', () async {
+    /// Signs A in while a request of the account before is still out, and
+    /// out again before that request ends.
+    Future<void> signInAndOutWhileTheOneBeforeSyncs() async {
+      final before = Completer<void>();
+      container.read(syncControlProvider).track(before.future);
+      users.add(_userA);
+      await pumpEventQueue(); // A's first cycle waits for it
+      users.add(null);
+      before.complete();
+      await pumpEventQueue();
+    }
+
+    test('the question is withdrawn when its sign-in ends, and nothing is removed', () async {
       await leaveUnsynced();
       users.add(_userA);
       final question = await _asked(container);
@@ -195,6 +207,23 @@ void main() {
       await pumpEventQueue();
       expect(await question.answer, isTrue);
       await expectKept(unsynced: 1);
+    });
+
+    test('a sign-in that ends while the account before still syncs asks nothing', () async {
+      await leaveUnsynced();
+      final asked = <Handover>[];
+      container.listen<Handover?>(handoverProvider, (_, next) {
+        if (next != null) asked.add(next);
+      });
+      await signInAndOutWhileTheOneBeforeSyncs();
+      expect(asked, isEmpty);
+      await expectKept(unsynced: 1);
+    });
+
+    test('a sign-in that ends while the account before still syncs clears nothing', () async {
+      // Nothing unsynced: there is no question, the AI key would go next.
+      await signInAndOutWhileTheOneBeforeSyncs();
+      await expectKept(unsynced: 0);
     });
   });
 }

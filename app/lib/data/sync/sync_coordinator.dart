@@ -152,7 +152,13 @@ final syncCoordinatorProvider = Provider<void>((ref) {
         // after asking when some of it never reached that account.
         final unsynced = await service.unsyncedChanges();
         if (unsynced > 0) {
-          final asked = question = Handover(previousEmail: await service.ownerEmail(), unsynced: unsynced);
+          final email = await service.ownerEmail();
+          // This sign-in may have ended while the account before stopped or
+          // these were read: nobody is left to ask. Nothing waits between
+          // this check and the question, so a sign-in that ends later finds
+          // the question and withdraws it.
+          if (service.isStopped) throw const SyncStopped();
+          final asked = question = Handover(previousEmail: email, unsynced: unsynced);
           final remove = await handover.ask(asked);
           question = null;
           // Kept (this account is signed out again), or this sign-in ended
@@ -160,7 +166,9 @@ final syncCoordinatorProvider = Provider<void>((ref) {
           if (!remove || service.isStopped) throw const SyncStopped();
         }
         // Its AI key goes first: if anything stops the claim, the next
-        // attempt still finds the other owner and clears again.
+        // attempt still finds the other owner and clears again. A sign-in
+        // that has ended clears nothing.
+        if (service.isStopped) throw const SyncStopped();
         await ai.clear();
       }
       await service.claimFor(user.id, email: user.email);
