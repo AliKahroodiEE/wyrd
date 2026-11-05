@@ -104,6 +104,52 @@ class FakeApi implements RemoteApi {
   Future<void> updateNotificationPrefs(Map<String, Object?> prefs) async => notificationPrefs.add(prefs);
 }
 
+/// Pages like sync_pull: the rows after the cursor in change_id order,
+/// [pageSize] a page, plus the quest of every subtask and completion in a
+/// page even when that quest's change_id lies beyond the page's cursor (it
+/// comes again in its own page).
+class PagingApi extends FakeApi {
+  PagingApi(this.rows, {this.pageSize = 3});
+
+  /// The server's rows, each with the table it is pulled from.
+  final List<(String, Map<String, Object?>)> rows;
+  final int pageSize;
+
+  /// Every page as it was served.
+  final pages = <Map<String, Object?>>[];
+
+  /// Runs before the page after [cursor] is served.
+  Future<void> Function(int cursor)? beforePage;
+
+  @override
+  Future<Map<String, Object?>> pull(int cursor) async {
+    pullCalls++;
+    pulledFrom.add(cursor);
+    await beforePage?.call(cursor);
+    int changeId(Map<String, Object?> row) => row['change_id']! as int;
+    final after = [
+      for (final r in rows)
+        if (changeId(r.$2) > cursor) r,
+    ]..sort((a, b) => changeId(a.$2).compareTo(changeId(b.$2)));
+    final page = after.take(pageSize).toList();
+    final next = page.isEmpty ? cursor : changeId(page.last.$2);
+    final parents = {
+      for (final (table, row) in page)
+        if (table == 'subtasks' || table == 'completions') row['quest_id'],
+    };
+    final changes = <String, List<Map<String, Object?>>>{};
+    for (final (table, row) in page) {
+      (changes[table] ??= []).add(row);
+    }
+    for (final (table, row) in rows) {
+      if (table == 'quests' && changeId(row) > next && parents.contains(row['id'])) (changes['quests'] ??= []).add(row);
+    }
+    final res = {'cursor': next, 'has_more': after.length > pageSize, 'changes': changes};
+    pages.add(res);
+    return res;
+  }
+}
+
 Map<String, Object?> serverResult(int discipline) => {
   'grants': [
     {'attribute': 'discipline', 'amount': discipline, 'rawAmount': discipline},
@@ -496,6 +542,145 @@ void main() {
         await sync.syncOnce();
         expect((await quests.byId(id))!.title, 'Y');
       });
+    });
+  });
+
+  group('a page that carries a child\'s quest before the quest\'s own page', () {
+    const subtask = '018f0000-0000-7000-8000-0000000000d1';
+    const first = '018f0000-0000-7000-8000-0000000000d2';
+    const other = '018f0000-0000-7000-8000-0000000000d3';
+    const second = '018f0000-0000-7000-8000-0000000000d4';
+
+    /// A quest completed for a while and edited since (change_id 9), so its
+    /// subtask and completion lie in the first page and the quest in the
+    /// last; another quest with its completion fills the page between.
+    List<(String, Map<String, Object?>)> history(String quest) => [
+      (
+        'subtasks',
+        {
+          'id': subtask,
+          'quest_id': quest,
+          'title': 'Chapter 1',
+          'done': true,
+          'position': 0,
+          'updated_at': '2026-11-01T05:00:00Z',
+          'change_id': 2,
+        },
+      ),
+      (
+        'completions',
+        {
+          'id': first,
+          'quest_id': quest,
+          'occurrence_day': '2026-11-01',
+          'local_day': '2026-11-01',
+          'completed_at': '2026-11-01T06:00:00Z',
+          'state': 'active',
+          'result': serverResult(5),
+          'change_id': 3,
+        },
+      ),
+      ('evaluations', {'completion_id': first, 'proposal': serverProposal(), 'change_id': 4}),
+      (
+        'quests',
+        {
+          'id': other,
+          'tier': 'daily',
+          'title': 'Other',
+          'created_at': '2026-11-01T05:00:00Z',
+          'updated_at': '2026-11-01T05:00:00Z',
+          'change_id': 5,
+        },
+      ),
+      (
+        'completions',
+        {
+          'id': second,
+          'quest_id': other,
+          'occurrence_day': '2026-11-02',
+          'local_day': '2026-11-02',
+          'completed_at': '2026-11-02T06:00:00Z',
+          'state': 'active',
+          'result': serverResult(3),
+          'change_id': 6,
+        },
+      ),
+      ('day_stats', {'local_day': '2026-11-02', 'change_id': 7}),
+      (
+        'quests',
+        {
+          'id': quest,
+          'tier': 'daily',
+          'title': 'Read (edited elsewhere)',
+          'recurrence': {'kind': 'daily'},
+          'created_at': '2026-10-01T05:00:00Z',
+          'updated_at': '2026-11-03T05:00:00Z',
+          'change_id': 9,
+        },
+      ),
+    ];
+
+    Future<int?> cursor() async {
+      final row = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).getSingleOrNull();
+      return row == null ? null : int.parse(row.value);
+    }
+
+    Future<List<List<Object>>> snapshot() async => [
+      await db.select(db.quests).get(),
+      await db.select(db.subtasks).get(),
+      await db.select(db.completions).get(),
+      await db.select(db.evaluations).get(),
+      await db.select(db.ledgerEntries).get(),
+    ];
+
+    test('a new device gets the children with their quest, and the quest again changes nothing', () async {
+      const quest = '018f0000-0000-7000-8000-0000000000d0';
+      final server = PagingApi(history(quest));
+      final paged = SyncService(db, server, progression);
+      List<List<Object>>? beforeAgain;
+      server.beforePage = (from) async {
+        if (from == 7) beforeAgain = await snapshot(); // the quest's own page comes next
+      };
+
+      await paged.syncOnce();
+
+      final firstPage = server.pages.first['changes']! as Map<String, List<Map<String, Object?>>>;
+      expect(firstPage['quests']!.map((q) => q['id']), [quest], reason: 'delivered with its children');
+      expect(server.pulledFrom, [0, 4, 7], reason: 'each page continues from the page\'s cursor');
+      expect(await cursor(), 9);
+      expect((await quests.byId(quest))!.title, 'Read (edited elsewhere)');
+      expect((await db.select(db.subtasks).getSingle()).questId, quest);
+      expect((await db.select(db.completions).get()).map((c) => c.questId).toSet(), {quest, other});
+      expect(await progression.attributeTotals(), {Attribute.discipline: 8});
+      expect(await snapshot(), beforeAgain, reason: 'the quest\'s own page changed nothing');
+
+      await paged.syncOnce();
+      expect(server.pulledFrom.last, 9);
+      expect(await db.select(db.evaluations).get(), hasLength(2));
+      expect(await db.select(db.ledgerEntries).get(), hasLength(2));
+    });
+
+    test('a quest with a change waiting here is left alone and holds the cursor only in its own page', () async {
+      final mine = await quests.create(const QuestDraft(title: 'Read'));
+      final server = PagingApi(history(mine.id))..refusedForNow.add(mine.id);
+      final paged = SyncService(db, server, progression);
+
+      await paged.syncOnce();
+
+      expect((await quests.byId(mine.id))!.title, 'Read', reason: 'the edit here still has to go up');
+      expect((await db.select(db.subtasks).getSingle()).questId, mine.id);
+      expect(await progression.attributeTotals(), {Attribute.discipline: 8});
+      expect(server.pulledFrom, [0, 4, 7], reason: 'the early copy did not move or hold the first page\'s cursor');
+      expect(await cursor(), 8, reason: 'held just before the quest by its own page');
+
+      server
+        ..refusedForNow.remove(mine.id)
+        ..ignored.add(mine.id); // the edit elsewhere is newer
+      await paged.syncOnce();
+      expect(server.pulledFrom.last, 8);
+      expect((await quests.byId(mine.id))!.title, 'Read (edited elsewhere)');
+      expect(await cursor(), 9);
+      expect(await db.select(db.ledgerEntries).get(), hasLength(2));
     });
   });
 
