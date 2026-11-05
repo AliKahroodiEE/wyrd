@@ -375,6 +375,11 @@ class SyncService {
 
   // ------------------------------------------------------------- evaluate
 
+  /// Asks the server to evaluate the completions this device sent. A
+  /// completion that was undone (here, or on another device: the pull
+  /// before this has applied that) or that is gone needs no evaluation and
+  /// leaves the list without asking; so does one the server reports undone.
+  /// Anything else that fails is asked again next cycle.
   Future<int> _evaluatePending() async {
     final pending = await _pendingEvaluations();
     var done = 0;
@@ -382,6 +387,8 @@ class SyncService {
     for (final id in pending) {
       _checkStopped();
       try {
+        final completion = await (_db.select(_db.completions)..where((c) => c.id.equals(id))).getSingleOrNull();
+        if (completion == null || completion.state == 'undone') continue;
         // Proposals made with the user's own AI travel with the request;
         // the server validates and bounds them (it never sees the key).
         final local = await (_db.select(_db.evaluations)..where((e) => e.completionId.equals(id))).getSingleOrNull();
@@ -394,6 +401,7 @@ class SyncService {
           clientProposal: clientProposal,
           clientModel: clientProposal == null ? null : await _clientModel?.call(),
         );
+        if (res?['status'] == 'undone') continue; // the next pull brings the undo, if it has not yet
         final result = res?['result'];
         final proposal = res?['proposal'];
         if (result is Map && proposal is Map) {

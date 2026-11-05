@@ -500,6 +500,61 @@ void main() {
     expect(await sync.unsyncedChanges(), 1);
   });
 
+  group('completions undone before their evaluation', () {
+    test('an undo that goes up with its completion leaves nothing unsynced', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      final outcome = await progression.complete(q, provisional: true);
+      expect(await progression.undo(outcome!.completionId), isTrue);
+      await sync.syncOnce(); // the completion and its undo go up together
+      expect(await db.select(db.outboxEntries).get(), isEmpty);
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, 0, reason: 'an undone completion is never evaluated');
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 0);
+    });
+
+    test('an undo pulled from another device ends the wait for the evaluation', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      final outcome = await progression.complete(q, provisional: true);
+      await sync.syncOnce(); // it went up; its evaluation could not run
+      expect(await sync.unsyncedChanges(), 1);
+      final calls = api.evaluateCalls;
+      final local = await db.select(db.completions).getSingle();
+      api.pullResponse = {
+        'cursor': 60,
+        'has_more': false,
+        'changes': {
+          'completions': [
+            {
+              'id': outcome!.completionId,
+              'quest_id': q.id,
+              'occurrence_day': local.occurrenceDay,
+              'completed_at': local.completedAt.toUtc().toIso8601String(),
+              'state': 'undone',
+              'undone_at': local.completedAt.toUtc().toIso8601String(),
+              'change_id': 60,
+            },
+          ],
+        },
+      };
+      await sync.syncOnce();
+      expect((await db.select(db.completions).getSingle()).state, 'undone');
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, calls, reason: 'nothing is left to evaluate');
+    });
+
+    test('the server\'s answer that a completion was undone is final', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      await progression.complete(q, provisional: true);
+      api.evaluation = {'status': 'undone'}; // undone elsewhere after this cycle's pull
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 1);
+      expect(await sync.unsyncedChanges(), 0);
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 1, reason: 'not asked again');
+    });
+  });
+
   test('the owner and its unsynced changes are known before another account claims the device', () async {
     expect(await sync.owner(), isNull);
     await sync.claimFor('user-a', email: 'a@example.com');

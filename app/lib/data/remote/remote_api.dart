@@ -12,7 +12,9 @@ abstract class RemoteApi {
 
   /// Authoritative evaluation: `{status, result, proposal, source, …}`, or
   /// null when the server could not evaluate yet (retried on next sync).
-  /// Whether AI is used follows the synced profile setting.
+  /// `{status: 'undone'}` is final: the completion was undone on the server
+  /// and will never be evaluated. Whether AI is used follows the synced
+  /// profile setting.
   Future<Map<String, Object?>?> evaluate(
     String completionId, {
     Map<String, Object?>? clientProposal,
@@ -51,10 +53,20 @@ class SupabaseRemoteApi implements RemoteApi {
     Map<String, Object?>? clientProposal,
     String? clientModel,
   }) async {
-    final res = await _client.functions.invoke(
-      'evaluate-completion',
-      body: {'completion_id': completionId, 'client_proposal': ?clientProposal, 'client_model': ?clientModel},
-    );
+    final FunctionResponse res;
+    try {
+      res = await _client.functions.invoke(
+        'evaluate-completion',
+        body: {'completion_id': completionId, 'client_proposal': ?clientProposal, 'client_model': ?clientModel},
+      );
+    } on FunctionException catch (e) {
+      // evaluate-completion answers 409 completion_undone for a completion
+      // that is no longer active, and no retry changes that. Every other
+      // failure, its 409 busy among them, is retried next sync.
+      final details = e.details;
+      if (e.status == 409 && details is Map && details['error'] == 'completion_undone') return {'status': 'undone'};
+      rethrow;
+    }
     final data = res.data;
     return data is Map ? Map<String, Object?>.from(data) : null;
   }
