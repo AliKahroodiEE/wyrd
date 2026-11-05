@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:drift/drift.dart';
+import 'package:flutter/widgets.dart' show Characters;
 import 'package:wyrd_engine/wyrd_engine.dart';
 
 import '../db/database.dart';
@@ -285,7 +286,7 @@ class SyncService {
           'hlc': hlc,
           'payload': {
             'quest_id': s.questId,
-            'title': s.title,
+            'title': _fitText(s.title, 200),
             'done': s.done,
             'position': s.position,
             'deleted_at': s.deletedAt?.toUtc().toIso8601String(),
@@ -303,8 +304,10 @@ class SyncService {
             'quest_id': c.questId,
             'occurrence_day': c.occurrenceDay,
             'completed_at': c.completedAt.toUtc().toIso8601String(),
-            'declared_minutes': c.declaredMinutes,
-            'tracked_minutes': c.trackedMinutes,
+            // At most a day each (completions_declared_minutes and
+            // completions_tracked_minutes); a timer left running is longer.
+            'declared_minutes': c.declaredMinutes?.clamp(0, 1440),
+            'tracked_minutes': c.trackedMinutes?.clamp(0, 1440),
           },
         };
       case 'completion_undo':
@@ -319,24 +322,32 @@ class SyncService {
     return null;
   }
 
-  /// Server representation of a local quest row.
+  /// Server representation of a local quest row, within the checks of
+  /// public.quests (…_core_schema.sql): a value outside them would be
+  /// refused for good, and the quest, its subtasks and completions would
+  /// never reach the server. Texts are cut to the server's length, an
+  /// estimate outside 1 to 1440 minutes goes up as none, priority stays
+  /// within 0 to 3, tier, category and status are ones the server knows,
+  /// and a quest is never its own parent.
   static Map<String, Object?> questPayload(QuestRow q) {
     final anchor = q.dueAt ?? q.createdAt;
     final reminder = q.remindAt == null
         ? null
         : DateTime(anchor.year, anchor.month, anchor.day, q.remindAt! ~/ 60, q.remindAt! % 60);
+    final estimate = q.estimatedMinutes;
+    final intention = q.intention;
     return {
-      'parent_id': q.parentId,
-      'tier': q.tier,
-      'title': q.title,
-      'notes': q.notes,
-      'category': q.category,
-      'priority': q.priority,
-      'status': q.status,
+      'parent_id': q.parentId == q.id ? null : q.parentId,
+      'tier': _tiers.contains(q.tier) ? q.tier : 'daily',
+      'title': _fitText(q.title, 200),
+      'notes': _fitText(q.notes, 4000),
+      'category': _categories.contains(q.category) ? q.category : null,
+      'priority': q.priority.clamp(0, 3),
+      'status': _statuses.contains(q.status) ? q.status : 'active',
       'due_at': q.dueAt?.toUtc().toIso8601String(),
-      'estimated_minutes': q.estimatedMinutes,
+      'estimated_minutes': estimate != null && estimate >= 1 && estimate <= 1440 ? estimate : null,
       'recurrence': q.recurrence == 'none' ? null : {'kind': q.recurrence},
-      'intention': q.intention,
+      'intention': intention == null ? null : _fitText(intention, 280),
       'share_level': _shareToServer[q.shareLevel] ?? 'private',
       'reminder_at': reminder?.toUtc().toIso8601String(),
       'deleted_at': q.deletedAt?.toUtc().toIso8601String(),
@@ -350,6 +361,45 @@ class SyncService {
     'completionOnly': 'completion_only',
     'private': 'private',
   };
+
+  // What public.quests takes: the quest_tier and quest_category types and
+  // the quests_status check.
+  static const _tiers = {'daily', 'contract', 'objective'};
+  static const _categories = {
+    'study',
+    'work',
+    'fitness',
+    'health',
+    'creative',
+    'social',
+    'chores',
+    'admin',
+    'mindfulness',
+    'reading',
+    'other',
+  };
+  static const _statuses = {'active', 'completed', 'paused', 'archived'};
+
+  /// [text] as a server text column of at most [max] characters takes it.
+  /// The server counts code points (char_length); the cut falls between
+  /// characters as people see them, never inside an emoji or between a
+  /// letter and its marks. Only a first character longer than [max] on its
+  /// own (a letter under hundreds of marks) is cut inside, rather than
+  /// leaving nothing. NUL is left out: no jsonb value can hold it, so it
+  /// would fail the whole push.
+  static String _fitText(String text, int max) {
+    final clean = text.contains('\u0000') ? text.replaceAll('\u0000', '') : text;
+    if (clean.runes.length <= max) return clean;
+    var points = 0;
+    var end = 0;
+    for (final c in Characters(clean)) {
+      final n = c.runes.length;
+      if (points + n > max) break;
+      points += n;
+      end += c.length;
+    }
+    return end == 0 ? String.fromCharCodes(clean.runes.take(max)) : clean.substring(0, end);
+  }
 
   /// Fixed-width, lexicographically ordered HLC:
   /// `<ISO-8601 UTC millis>-<4 hex counter>-<node>`.
