@@ -209,6 +209,24 @@ void main() {
       await expectKept(unsynced: 1);
     });
 
+    test('the question is withdrawn once another tab has claimed the device for this account', () async {
+      await leaveUnsynced();
+      users.add(_userA);
+      final question = await _asked(container);
+
+      // Other writes leave it open.
+      await ai.save(const AiProviderConfig(kind: AiProviderKind.openai, model: 'gpt-5'));
+      await pumpEventQueue();
+      expect(question.withdrawn, isFalse);
+
+      // The web app's tabs share this database: Remove was chosen in another.
+      await SyncService(db, _NoServer(), ProgressionRepository(db)).claimFor(_userA.id, email: _userA.email);
+      await pumpEventQueue();
+      expect(question.withdrawn, isTrue);
+      expect(await question.answer, isFalse);
+      expect(container.read(handoverProvider), isNull);
+    });
+
     test('a sign-in that ends while the account before still syncs asks nothing', () async {
       await leaveUnsynced();
       final asked = <Handover>[];

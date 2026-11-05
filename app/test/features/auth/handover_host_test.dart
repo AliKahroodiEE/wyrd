@@ -23,6 +23,10 @@ void main() {
           path: '/',
           builder: (_, _) => const Scaffold(body: Text('character page')),
         ),
+        GoRoute(
+          path: '/guilds',
+          builder: (_, _) => const Scaffold(body: Text('guilds page')),
+        ),
       ],
     );
     addTearDown(router.dispose);
@@ -75,6 +79,37 @@ void main() {
     await settle(tester);
     expect(await answer, isFalse);
     expect(gateway.calls, ['signOut']);
+  });
+
+  testWidgets('only Keep signs out: a dialog closed unanswered asks again', (tester) async {
+    final (gateway, container) = await pump(tester);
+    final answer = container
+        .read(handoverProvider.notifier)
+        .ask(Handover(previousEmail: 'arin@example.com', unsynced: 3));
+    await settle(tester);
+    final dialog = tester.element(find.text('Unsaved changes from another account'));
+
+    // Back and the barrier leave it as it is.
+    await tester.binding.handlePopRoute();
+    await settle(tester);
+    await tester.tapAt(const Offset(4, 4));
+    await settle(tester);
+    expect(dialog.mounted, isTrue);
+
+    // A notification opens another screen: the page under the dialog goes,
+    // and the dialog with it, unanswered.
+    container.read(routerProvider).go('/guilds');
+    await settle(tester);
+    expect(find.text('guilds page'), findsOneWidget);
+    expect(dialog.mounted, isFalse);
+    expect(find.text('Unsaved changes from another account'), findsOneWidget);
+    expect(gateway.calls, isEmpty);
+
+    await tester.tap(find.text('Keep them and sign out'));
+    await settle(tester);
+    expect(await answer, isFalse);
+    expect(gateway.calls, ['signOut']);
+    expect(find.text('Unsaved changes from another account'), findsNothing);
   });
 
   testWidgets('Persian: the question reads right to left with the address isolated', (tester) async {

@@ -58,16 +58,20 @@ class _HandoverHostState extends ConsumerState<HandoverHost> {
             ? l10n.handoverOneChange
             : l10n.handoverChanges(ref.fmt(context).number(handover.unsynced));
         final email = handover.previousEmail;
-        return AlertDialog(
-          title: Text(l10n.handoverTitle),
-          content: Text(
-            // The address is isolated so it reads left to right in Persian.
-            email == null ? l10n.handoverBodyNoEmail(changes) : l10n.handoverBody('\u2068$email\u2069', changes),
+        // Only the buttons answer: back and the barrier leave it open.
+        return PopScope<bool>(
+          canPop: false,
+          child: AlertDialog(
+            title: Text(l10n.handoverTitle),
+            content: Text(
+              // The address is isolated so it reads left to right in Persian.
+              email == null ? l10n.handoverBodyNoEmail(changes) : l10n.handoverBody('\u2068$email\u2069', changes),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: Text(l10n.handoverKeep)),
+              FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(l10n.handoverRemove)),
+            ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: Text(l10n.handoverKeep)),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(l10n.handoverRemove)),
-          ],
         );
       },
     );
@@ -76,7 +80,16 @@ class _HandoverHostState extends ConsumerState<HandoverHost> {
       if (identical(_showing, handover)) _showing = null;
       return;
     }
-    if (remove != true && mounted) {
+    if (remove == null) {
+      // Closed unanswered: the page under it was replaced (a notification
+      // opened another screen, or onboarding took over after another tab
+      // cleared the device). That is no Keep; it is asked again while it
+      // still applies.
+      if (identical(_showing, handover)) _showing = null;
+      if (mounted && identical(ref.read(handoverProvider), handover)) _show(handover);
+      return;
+    }
+    if (!remove && mounted) {
       final gateway = ref.read(authGatewayProvider);
       if (gateway != null) {
         try {
@@ -87,7 +100,7 @@ class _HandoverHostState extends ConsumerState<HandoverHost> {
         }
       }
     }
-    handover.decide(remove: remove == true);
+    handover.decide(remove: remove);
     if (identical(_showing, handover)) _showing = null;
   }
 

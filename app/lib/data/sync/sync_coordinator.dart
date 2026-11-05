@@ -59,8 +59,8 @@ class Handover {
   final int unsynced;
   final _answer = Completer<bool>();
 
-  /// Set when the sign-in that asked has ended: the question no longer
-  /// applies, and nobody is signed out for it.
+  /// Set when the question no longer applies: the sign-in that asked has
+  /// ended, or another tab has removed the work. Nobody is signed out for it.
   bool get withdrawn => _withdrawn;
   bool _withdrawn = false;
 
@@ -97,7 +97,7 @@ class HandoverNotifier extends Notifier<Handover?> {
     }
   }
 
-  /// Takes [handover] back: its sign-in ended before the answer came.
+  /// Takes [handover] back: it stopped applying before the answer came.
   void withdraw(Handover handover) {
     handover._withdraw();
     if (identical(state, handover)) state = null;
@@ -143,6 +143,29 @@ final syncCoordinatorProvider = Provider<void>((ref) {
   var again = false;
   Timer? debounce;
 
+  /// Asks [asked] and waits for the answer. The web app's tabs share this
+  /// database: once another one has claimed the device for this account
+  /// (Remove was chosen there), the work is gone, and the question is
+  /// withdrawn here rather than answered again.
+  Future<bool> ask(Handover asked) async {
+    Future<void> check() async {
+      try {
+        if (await service.owner() == user.id) handover.withdraw(asked);
+      } on Object {
+        // Unreadable for now: the question stays until it is answered.
+      }
+    }
+
+    final claims = db.tableUpdates(TableUpdateQuery.onTable(db.keyValues)).listen((_) => unawaited(check()));
+    try {
+      final answer = handover.ask(asked);
+      unawaited(check()); // claimed before this listened
+      return await answer;
+    } finally {
+      unawaited(claims.cancel());
+    }
+  }
+
   Future<SyncReport> cycle() async {
     if (!claimed) {
       await previous; // the account before must have stopped writing
@@ -159,10 +182,11 @@ final syncCoordinatorProvider = Provider<void>((ref) {
           // the question and withdraws it.
           if (service.isStopped) throw const SyncStopped();
           final asked = question = Handover(previousEmail: email, unsynced: unsynced);
-          final remove = await handover.ask(asked);
+          final remove = await ask(asked);
           question = null;
-          // Kept (this account is signed out again), or this sign-in ended
-          // while the question was open: either way nothing is removed.
+          // Kept (this account is signed out again), withdrawn, or this
+          // sign-in ended while the question was open: nothing is removed
+          // here. After a claim in another tab, the next cycle syncs.
           if (!remove || service.isStopped) throw const SyncStopped();
         }
         // Its AI key goes first: if anything stops the claim, the next
