@@ -29,9 +29,15 @@ class FakeApi implements RemoteApi {
 
   /// Ids the server refuses for now, every time ('retryable').
   final refusedForNow = <String>{};
+
+  /// Ids the server refuses for good ('invalid', not retryable).
+  final refusedForGood = <String>{};
   var evaluateCalls = 0;
   var pushCalls = 0;
   var pullCalls = 0;
+
+  /// The cursor of every pull, in order.
+  final pulledFrom = <int>[];
 
   /// Holds a pull until it completes.
   Future<void>? pullGate;
@@ -47,15 +53,19 @@ class FakeApi implements RemoteApi {
     }
     final from = retryableFrom ?? changes.length;
     bool refused(int i) => i >= from || refusedForNow.contains(changes[i]['id']);
+    bool invalid(int i) => refusedForGood.contains(changes[i]['id']);
     pushed.addAll([
       for (var i = 0; i < changes.length; i++)
-        if (!refused(i)) changes[i],
+        if (!refused(i) && !invalid(i)) changes[i],
     ]);
     return [
       for (var i = 0; i < changes.length; i++)
-        refused(i)
-            ? {'id': changes[i]['id'], 'status': 'rejected', 'retryable': true}
-            : {'id': changes[i]['id'], 'status': ignored.contains(changes[i]['id']) ? 'ignored' : 'applied'},
+        if (refused(i))
+          {'id': changes[i]['id'], 'status': 'rejected', 'retryable': true}
+        else if (invalid(i))
+          {'id': changes[i]['id'], 'status': 'rejected', 'reason': 'invalid'}
+        else
+          {'id': changes[i]['id'], 'status': ignored.contains(changes[i]['id']) ? 'ignored' : 'applied'},
     ];
   }
 
@@ -63,6 +73,7 @@ class FakeApi implements RemoteApi {
   @override
   Future<Map<String, Object?>> pull(int cursor) async {
     pullCalls++;
+    pulledFrom.add(cursor);
     if (pullGate != null) await pullGate;
     final next = (pullResponse['cursor']! as num).toInt();
     if (cursor >= next) return {'cursor': cursor, 'has_more': false, 'changes': <String, Object?>{}};
@@ -378,6 +389,113 @@ void main() {
         ..ignored.add(id);
       await sync.syncOnce();
       expect((await quests.byId(id))!.title, 'Y', reason: 'fetched again once the edit went up');
+    });
+
+    group('a row dropped after three refusals', () {
+      const other = '018f0000-0000-7000-8000-0000000000ab';
+      const completion = '018f0000-0000-7000-8000-0000000000c2';
+
+      Future<int?> cursor() async {
+        final row = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).getSingleOrNull();
+        return row == null ? null : int.parse(row.value);
+      }
+
+      Future<int> ledgerRows() async => (await db.select(db.ledgerEntries).get()).length;
+
+      /// The change waiting for the row is refused three times; then another
+      /// device's newer version arrives with later rows. It no longer holds
+      /// the cursor, so it is dropped and the cursor moves past it.
+      Future<void> dropIt() async {
+        api.refusedForNow.add(id);
+        for (var i = 0; i < 3; i++) {
+          await sync.syncOnce();
+        }
+        api.pullResponse = {
+          'cursor': 20,
+          'has_more': false,
+          'changes': {
+            'quests': [
+              serverRow('Y', 18),
+              {...serverRow('Made elsewhere', 19), 'id': other},
+            ],
+            'completions': [
+              {
+                'id': completion,
+                'quest_id': other,
+                'occurrence_day': '2026-11-04',
+                'completed_at': '2026-11-04T06:00:00Z',
+                'state': 'active',
+                'result': serverResult(11),
+                'change_id': 20,
+              },
+            ],
+            'evaluations': [
+              {'completion_id': completion, 'proposal': serverProposal()},
+            ],
+          },
+        };
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, isNot('Y'), reason: 'dropped');
+        expect(await quests.byId(other), isNotNull);
+        expect(await cursor(), 20);
+      }
+
+      test('comes down once the server keeps its own version', () async {
+        await editHere();
+        await dropIt();
+        final ledger = await ledgerRows();
+        api
+          ..refusedForNow.remove(id)
+          ..ignored.add(id);
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, 'Y');
+        expect(await db.select(db.outboxEntries).get(), isEmpty);
+        expect(await cursor(), 20);
+        // The later rows came again and changed nothing.
+        expect(api.pulledFrom.last, 17);
+        expect(await ledgerRows(), ledger);
+        expect(await db.select(db.evaluations).get(), hasLength(1));
+        expect(await progression.attributeTotals(), {Attribute.discipline: 11});
+      });
+
+      test('comes down once the server refuses the change for good', () async {
+        await editHere();
+        await dropIt();
+        api
+          ..refusedForNow.remove(id)
+          ..refusedForGood.add(id);
+        final report = await sync.syncOnce();
+        expect(report.rejected, 1);
+        expect((await quests.byId(id))!.title, 'Y');
+      });
+
+      test('is not fetched again when the server took the change', () async {
+        await editHere();
+        await dropIt();
+        api.refusedForNow.remove(id);
+        await sync.syncOnce(); // applied: the merged row comes with a new change_id
+        expect(api.pulledFrom.last, 20, reason: 'no step back');
+        final note = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_dropped'))).getSingle();
+        expect(note.value, '{}');
+      });
+
+      test('waits for the last change still waiting for the row', () async {
+        await editHere();
+        await quests.update(id, const QuestDraft(title: 'X2'));
+        await dropIt();
+        api
+          ..refusedForNow.remove(id)
+          ..ignored.add(id)
+          ..retryableFrom = 1; // the first change is answered, the second still waits
+        await sync.syncOnce();
+        expect(await db.select(db.outboxEntries).get(), hasLength(1));
+        expect((await quests.byId(id))!.title, 'X2', reason: 'its own change still has to go up');
+        expect(api.pulledFrom.last, 20);
+
+        api.retryableFrom = null;
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, 'Y');
+      });
     });
   });
 

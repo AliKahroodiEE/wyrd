@@ -91,6 +91,7 @@ class SyncService {
   static const _cursorKey = 'sync_cursor';
   static const _nodeKey = 'sync_node';
   static const _pendingEvalKey = 'sync_pending_evaluations';
+  static const _droppedKey = 'sync_dropped';
   static const _ownerKey = 'sync_owner';
   static const _ownerEmailKey = 'sync_owner_email';
 
@@ -194,7 +195,10 @@ class SyncService {
       for (final o in batch) {
         final change = await _envelope(o, node);
         if (change == null) {
-          await _guarded(() => (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go());
+          await _guarded(() async {
+            await (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go();
+            await _settleDropped(o, taken: false);
+          });
           continue;
         }
         changes.add(change);
@@ -215,6 +219,7 @@ class SyncService {
           if (status == 'applied' || status == 'ignored') {
             pushed++;
             await (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go();
+            await _settleDropped(o, taken: status == 'applied');
             if (c['entity'] == 'completion' && c['op'] == 'insert') completionIds.add(c['id']! as String);
           } else if (r['retryable'] == true || status == null) {
             await (_db.update(
@@ -224,12 +229,43 @@ class SyncService {
           } else {
             rejected++;
             await (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go();
+            await _settleDropped(o, taken: false);
           }
         }
         await _addPendingEvaluations(completionIds);
       });
     }
     return (pushed, rejected);
+  }
+
+  /// A change of this device for a row that a pull dropped (see [_pull]) is
+  /// done with. If the server took it ([taken]), the row has a new change_id
+  /// and comes down with the next pull. If the server kept its own version
+  /// ('ignored', or a refusal that is final), that version gets no new
+  /// change_id, so once nothing else waits to go up for the row the cursor
+  /// goes back to just before it and the next pull fetches it again.
+  Future<void> _settleDropped(OutboxRow o, {required bool taken}) async {
+    final dropped = await _droppedRows();
+    final key = '${o.entity}:${o.entityId}';
+    final changeId = dropped.remove(key);
+    if (changeId == null) return;
+    if (!taken) {
+      if (await _pendingAttempts(o.entity, o.entityId) != null) return; // the last one to settle decides
+      final cursor = (await _read(_cursorKey) as num?)?.toInt() ?? 0;
+      if (changeId - 1 < cursor) await _write(_cursorKey, changeId - 1);
+    }
+    await _write(_droppedKey, dropped);
+  }
+
+  /// Rows a pull dropped while their change waited to go up:
+  /// `{'quest:<id>': lowest change_id dropped}`.
+  Future<Map<String, int>> _droppedRows() async {
+    final v = await _read(_droppedKey);
+    return {
+      if (v is Map)
+        for (final e in v.entries)
+          if (e.value is num) '${e.key}': (e.value as num).toInt(),
+    };
   }
 
   Future<Map<String, Object?>?> _envelope(OutboxRow o, String node) async {
@@ -447,7 +483,9 @@ class SyncService {
   /// pull ends there: the next cycle sends the change first and then gets
   /// the row again, so the server's winning version is never lost. A change
   /// the server has refused [_holdAttempts] times no longer holds anything
-  /// up; its row is skipped as before.
+  /// up: its row is dropped and the cursor moves on, but the row is noted
+  /// in the same transaction, so it is fetched again if that change ends
+  /// without the server taking it ([_settleDropped]).
   Future<(int, bool)> _pull(List<SyncedSettings> settings) async {
     var cursor = (await _read(_cursorKey) as num?)?.toInt() ?? 0;
     var applied = 0;
@@ -458,9 +496,9 @@ class SyncService {
       var held = false;
       applied += await _guarded(() async {
         final changes = (res['changes'] as Map?) ?? const {};
-        final skipped = <int>[];
-        var n = await _applyQuests((changes['quests'] as List?) ?? const [], skipped);
-        n += await _applySubtasks((changes['subtasks'] as List?) ?? const [], skipped);
+        final left = _Left();
+        var n = await _applyQuests((changes['quests'] as List?) ?? const [], left);
+        n += await _applySubtasks((changes['subtasks'] as List?) ?? const [], left);
         final proposals = <String, Map<String, Object?>>{
           for (final e in ((changes['evaluations'] as List?) ?? const []).whereType<Map<Object?, Object?>>())
             if (e['completion_id'] is String && e['proposal'] is Map)
@@ -474,13 +512,14 @@ class SyncService {
             await _adopt(s, Map<String, Object?>.from(row));
           }
         }
-        if (skipped.isNotEmpty) {
-          final hold = skipped.reduce(min) - 1;
+        if (left.held.isNotEmpty) {
+          final hold = left.held.reduce(min) - 1;
           if (hold < next) {
             next = hold < cursor ? cursor : hold;
             held = true;
           }
         }
+        if (left.dropped.isNotEmpty) await _noteDropped(left.dropped);
         await _write(_cursorKey, next);
         return n;
       });
@@ -494,7 +533,7 @@ class SyncService {
   /// Retries after which a waiting change stops holding the pull cursor.
   static const _holdAttempts = 3;
 
-  Future<int> _applyQuests(List<Object?> rows, List<int> skipped) async {
+  Future<int> _applyQuests(List<Object?> rows, _Left left) async {
     var n = 0;
     for (final raw in rows.whereType<Map<Object?, Object?>>()) {
       final r = Map<String, Object?>.from(raw);
@@ -502,7 +541,7 @@ class SyncService {
       if (id == null) continue;
       final attempts = await _pendingAttempts('quest', id);
       if (attempts != null) {
-        if (attempts < _holdAttempts) _skip(r, skipped);
+        _leave('quest', id, r, attempts, left);
         continue;
       }
       DateTime? ts(String k) => r[k] is String ? DateTime.parse(r[k]! as String).toLocal() : null;
@@ -544,7 +583,7 @@ class SyncService {
     'private': 'private',
   };
 
-  Future<int> _applySubtasks(List<Object?> rows, List<int> skipped) async {
+  Future<int> _applySubtasks(List<Object?> rows, _Left left) async {
     var n = 0;
     for (final raw in rows.whereType<Map<Object?, Object?>>()) {
       final r = Map<String, Object?>.from(raw);
@@ -553,7 +592,7 @@ class SyncService {
       if (id == null || questId == null) continue;
       final attempts = await _pendingAttempts('subtask', id);
       if (attempts != null) {
-        if (attempts < _holdAttempts) _skip(r, skipped);
+        _leave('subtask', id, r, attempts, left);
         continue;
       }
       final quest = await (_db.select(_db.quests)..where((q) => q.id.equals(questId))).getSingleOrNull();
@@ -656,11 +695,29 @@ class SyncService {
     return true;
   }
 
-  /// Notes a row left for later (see [_pull]); rows without a change_id
-  /// cannot hold the cursor.
-  static void _skip(Map<String, Object?> row, List<int> skipped) {
+  /// Leaves a pulled row alone while a change of this device for it waits
+  /// to go up: the row holds the cursor, or after [_holdAttempts] refusals
+  /// it is dropped and noted (see [_pull]). Rows without a change_id can do
+  /// neither.
+  static void _leave(String entity, String id, Map<String, Object?> row, int attempts, _Left left) {
     final changeId = row['change_id'];
-    if (changeId is num) skipped.add(changeId.toInt());
+    if (changeId is! num) return;
+    if (attempts < _holdAttempts) {
+      left.held.add(changeId.toInt());
+    } else {
+      final known = left.dropped['$entity:$id'];
+      left.dropped['$entity:$id'] = known == null ? changeId.toInt() : min(known, changeId.toInt());
+    }
+  }
+
+  /// Notes rows a pull dropped, keeping the lowest change_id of each.
+  Future<void> _noteDropped(Map<String, int> rows) async {
+    final dropped = await _droppedRows();
+    for (final MapEntry(:key, :value) in rows.entries) {
+      final known = dropped[key];
+      dropped[key] = known == null ? value : min(known, value);
+    }
+    await _write(_droppedKey, dropped);
   }
 
   /// How often the server already asked to retry this device's waiting
@@ -701,4 +758,15 @@ class SyncService {
 
   Future<void> _write(String key, Object? value) =>
       _db.into(_db.keyValues).insertOnConflictUpdate(KeyValuesCompanion.insert(key: key, value: jsonEncode(value)));
+}
+
+/// Pulled rows a page leaves alone because this device still has a change
+/// to send for them (see [SyncService._pull]).
+class _Left {
+  /// change_ids of the rows that hold the cursor.
+  final held = <int>[];
+
+  /// Rows dropped after [SyncService._holdAttempts] refusals, by
+  /// `entity:id`, with the change_id they came with.
+  final dropped = <String, int>{};
 }
