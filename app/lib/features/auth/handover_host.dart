@@ -21,20 +21,26 @@ class HandoverHost extends ConsumerStatefulWidget {
 
 class _HandoverHostState extends ConsumerState<HandoverHost> {
   Handover? _showing;
-  BuildContext? _dialog;
+
+  /// The route of the dialog asking [_showing], from its first build on.
+  Route<Object?>? _dialog;
 
   @override
   void initState() {
     super.initState();
     ref.listenManual<Handover?>(handoverProvider, (_, next) {
       final showing = _showing;
-      // A withdrawn question (its sign-in ended) closes without an answer.
-      if (showing != null && showing.withdrawn && !identical(next, showing)) {
-        final dialog = _dialog;
-        if (dialog != null && dialog.mounted) Navigator.of(dialog).pop();
-      }
+      // A withdrawn question (its sign-in ended, or another tab removed the
+      // work) closes without an answer.
+      if (showing != null && showing.withdrawn && !identical(next, showing)) _close(_dialog);
       if (next != null && !identical(next, _showing)) _show(next);
     }, fireImmediately: true);
+  }
+
+  /// Closes [route]'s dialog where it is: popping would close whichever
+  /// dialog is on top, which may be a newer question's.
+  static void _close(Route<Object?>? route) {
+    if (route != null && route.isActive) route.navigator?.removeRoute(route);
   }
 
   Future<void> _show(Handover handover) async {
@@ -48,11 +54,22 @@ class _HandoverHostState extends ConsumerState<HandoverHost> {
       });
       return;
     }
+    Route<Object?>? mine;
     final remove = await showDialog<bool>(
       context: navigator,
       barrierDismissible: false,
       builder: (context) {
-        _dialog = context;
+        if (mine == null) {
+          final route = ModalRoute.of(context);
+          if (handover.withdrawn) {
+            // Withdrawn after the push but before this first build (a web
+            // tab in the background draws no frames), when the listener had
+            // no route to close yet.
+            WidgetsBinding.instance.addPostFrameCallback((_) => _close(route));
+            return const SizedBox.shrink();
+          }
+          _dialog = mine = route;
+        }
         final l10n = context.l10n;
         final changes = handover.unsynced == 1
             ? l10n.handoverOneChange
@@ -75,7 +92,8 @@ class _HandoverHostState extends ConsumerState<HandoverHost> {
         );
       },
     );
-    _dialog = null;
+    // Only this dialog's: a newer one may already have been drawn.
+    if (identical(_dialog, mine)) _dialog = null;
     if (handover.withdrawn) {
       if (identical(_showing, handover)) _showing = null;
       return;
