@@ -184,14 +184,14 @@ final syncCoordinatorProvider = Provider<void>((ref) {
           final asked = question = Handover(previousEmail: email, unsynced: unsynced);
           final remove = await ask(asked);
           question = null;
-          // Kept (this account is signed out again), withdrawn, or this
-          // sign-in ended while the question was open: nothing is removed
-          // here. After a claim in another tab, the next cycle syncs.
-          if (!remove || service.isStopped) throw const SyncStopped();
+          // Kept (this account is signed out again) or withdrawn: nothing is
+          // removed here. After a claim in another tab, the next cycle syncs.
+          if (!remove) throw const SyncStopped();
         }
         // Its AI key goes first: if anything stops the claim, the next
         // attempt still finds the other owner and clears again. A sign-in
-        // that has ended clears nothing.
+        // that has ended clears nothing, even when Remove was chosen after
+        // it ended.
         if (service.isStopped) throw const SyncStopped();
         await ai.clear();
       }
