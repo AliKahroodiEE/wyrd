@@ -846,6 +846,21 @@ void main() {
       expect(api.evaluateCalls, calls, reason: 'nothing is left to evaluate');
     });
 
+    test('a completion no longer on this device leaves the wait without a request', () async {
+      await db
+          .into(db.keyValues)
+          .insert(
+            KeyValuesCompanion.insert(
+              key: 'sync_pending_evaluations',
+              value: '["018f0000-0000-7000-8000-0000000000c9"]',
+            ),
+          );
+      expect(await sync.unsyncedChanges(), 1);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, 0);
+    });
+
     test('the server\'s answer that a completion was undone is final', () async {
       final q = await quests.create(const QuestDraft(title: 'Write report'));
       await progression.complete(q, provisional: true);
