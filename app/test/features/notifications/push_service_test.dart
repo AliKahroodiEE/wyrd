@@ -641,6 +641,27 @@ void main() {
       expect(messaging.calls, calls);
     });
 
+    test('is invalidated when the next account has push off', () async {
+      await signOutOffline(settle);
+
+      // u2 signs in, still offline, with both switches off: nothing will
+      // register the token for u2, so it stays u1's.
+      push
+        ..setUser('u2')
+        ..setPreferences(_none);
+      await settle();
+      expect(messaging.deletions, 0);
+      expect(deviceLog.retire, isTrue);
+
+      backOnline();
+      push.resumed();
+      await settle();
+      expect(messaging.deletions, 1);
+      expect(deviceLog.retire, isFalse);
+      expect(push.status.value, PushStatus.hidden);
+      expect(registry.registered, hasLength(1), reason: 'only u1, before signing out');
+    });
+
     test('a sign-in before the retry keeps its token', () async {
       await signOutOffline(settle);
       backOnline();

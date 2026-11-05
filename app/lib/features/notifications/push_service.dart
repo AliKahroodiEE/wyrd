@@ -161,7 +161,7 @@ abstract interface class PushDeviceLog {
 ///
 /// A token it could not invalidate, signing out offline say, is noted in the
 /// [PushDeviceLog] and tried again at every launch and every return to the
-/// app while signed out, until the invalidation goes through.
+/// app while nobody here wants push, until the invalidation goes through.
 class PushService {
   PushService({
     required this._messaging,
@@ -235,9 +235,10 @@ class PushService {
   }
 
   /// The app is back in the foreground, where the network may be back too:
-  /// a token left to invalidate is tried again while signed out.
+  /// a token left to invalidate is tried again while nobody here wants push.
   void resumed() {
-    if (_userKnown && _userId == null) unawaited(_sync());
+    final pushWanted = _userId != null && _preferences?.any != false;
+    if (_userKnown && !pushWanted) unawaited(_sync());
   }
 
   /// The Settings switches; null while the profile is still loading.
@@ -366,7 +367,11 @@ class PushService {
     if (!_isCurrent(step)) return;
     _supported = supported;
     if (!preferences.any) {
-      if (_registered != null) await _retire(step, server: true);
+      // A token still waiting to be invalidated goes too, such as the one an
+      // account signed out offline left to whoever signs in next.
+      final pending = _registered == null && await _retirePending();
+      if (!_isCurrent(step)) return;
+      if (_registered != null || pending) await _retire(step, server: true, pending: pending);
       if (!_isCurrent(step)) return;
       _show(PushStatus.hidden);
       return;
