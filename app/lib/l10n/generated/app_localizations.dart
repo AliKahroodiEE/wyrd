@@ -710,6 +710,12 @@ abstract class AppLocalizations {
   /// **'Give the quest a name.'**
   String get fieldTitleRequired;
 
+  /// No description provided for @fieldTooLong.
+  ///
+  /// In en, this message translates to:
+  /// **'Too long. Keep it to {max} characters.'**
+  String fieldTooLong(String max);
+
   /// No description provided for @fieldNotes.
   ///
   /// In en, this message translates to:
@@ -817,6 +823,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Estimated minutes'**
   String get fieldEstimate;
+
+  /// No description provided for @fieldEstimateInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter whole minutes from {min} to {max}.'**
+  String fieldEstimateInvalid(String min, String max);
 
   /// No description provided for @fieldIntention.
   ///
@@ -1105,6 +1117,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Optional. Honest numbers keep your character honest.'**
   String get completeSheetMinutesHelp;
+
+  /// No description provided for @completeSheetMinutesInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter whole minutes, up to {max}.'**
+  String completeSheetMinutesInvalid(String max);
 
   /// No description provided for @completeSheetConfirm.
   ///

@@ -352,6 +352,11 @@ class AppLocalizationsFa extends AppLocalizations {
   String get fieldTitleRequired => 'برای مأموریت نامی بنویس.';
 
   @override
+  String fieldTooLong(String max) {
+    return 'خیلی طولانی است؛ حداکثر $max کاراکتر بنویس.';
+  }
+
+  @override
   String get fieldNotes => 'یادداشت';
 
   @override
@@ -404,6 +409,11 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get fieldEstimate => 'زمان تخمینی (دقیقه)';
+
+  @override
+  String fieldEstimateInvalid(String min, String max) {
+    return 'یک عدد صحیح از $min تا $max دقیقه بنویس.';
+  }
 
   @override
   String get fieldIntention => 'کی و کجا انجامش می‌دهی؟';
@@ -553,6 +563,11 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get completeSheetMinutesHelp => 'اختیاری. عددهای صادقانه، شخصیتت را صادق نگه می‌دارند.';
+
+  @override
+  String completeSheetMinutesInvalid(String max) {
+    return 'یک عدد صحیح تا سقف $max دقیقه بنویس.';
+  }
 
   @override
   String get completeSheetConfirm => 'مُهر کن';
