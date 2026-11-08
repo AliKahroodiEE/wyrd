@@ -38,7 +38,7 @@ class _RetryLater extends Fake implements RemoteApi {
   }
 
   @override
-  Future<Map<String, Object?>> pull(int cursor) async => {
+  Future<Map<String, Object?>> pull(int cursor, {int? maxRows}) async => {
     'cursor': cursor,
     'has_more': false,
     'changes': const <String, Object?>{},

@@ -42,6 +42,12 @@ class FakeApi implements RemoteApi {
 
   /// Every change sent, whatever the answer.
   final sent = <Map<String, Object?>>[];
+
+  /// A connection on which a page of more rows than this times out.
+  int? timeoutAbove;
+
+  /// The page size of every pull, null for the server's default.
+  final askedMaxRows = <int?>[];
   var evaluateCalls = 0;
   var pushCalls = 0;
   var pullCalls = 0;
@@ -87,9 +93,12 @@ class FakeApi implements RemoteApi {
 
   /// Like the server: only what changed after [cursor].
   @override
-  Future<Map<String, Object?>> pull(int cursor) async {
+  Future<Map<String, Object?>> pull(int cursor, {int? maxRows}) async {
     pullCalls++;
     pulledFrom.add(cursor);
+    askedMaxRows.add(maxRows);
+    final limit = timeoutAbove;
+    if (limit != null && (maxRows ?? 1000) > limit) throw TimeoutException('too slow');
     if (pullGate != null) await pullGate;
     final next = (pullResponse['cursor']! as num).toInt();
     if (cursor >= next) return {'cursor': cursor, 'has_more': false, 'changes': <String, Object?>{}};
@@ -138,7 +147,7 @@ class PagingApi extends FakeApi {
   Future<void> Function(int cursor)? beforePage;
 
   @override
-  Future<Map<String, Object?>> pull(int cursor) async {
+  Future<Map<String, Object?>> pull(int cursor, {int? maxRows}) async {
     pullCalls++;
     pulledFrom.add(cursor);
     await beforePage?.call(cursor);
@@ -966,6 +975,7 @@ void main() {
       await quests.create(const QuestDraft(title: 'Write report'));
       await sync.syncOnce();
       expect(keysOf(api.sent.single), containsAll(['title', 'tier', 'notes', 'status', 'priority', 'created_at']));
+      expect(api.sent.single['op'], 'upsert');
     });
 
     test('an edit sends only the fields it changed', () async {
@@ -973,7 +983,28 @@ void main() {
       await quests.update(q.id, const QuestDraft(title: 'Write the report', notes: 'old notes'));
       await sync.syncOnce();
       expect(keysOf(api.sent.single), {'title', 'created_at'}, reason: 'the old notes must not overwrite newer ones');
+      expect(api.sent.single['op'], 'patch', reason: 'part of a row must not be able to create the row');
       expect((api.sent.single['payload']! as Map)['title'], 'Write the report');
+    });
+
+    test('a form saves only what the person changed in it', () async {
+      final q = await synced(const QuestDraft(title: 'Write report', notes: 'first notes'));
+      final opened = QuestDraft.fromQuest(q);
+      await (db.update(
+        db.quests,
+      )..where((x) => x.id.equals(q.id))).write(const QuestsCompanion(notes: Value('notes from the other device')));
+
+      await quests.update(
+        q.id,
+        const QuestDraft(title: 'Write the report', notes: 'first notes'),
+        base: opened,
+      );
+
+      final row = await db.select(db.quests).getSingle();
+      expect(row.title, 'Write the report');
+      expect(row.notes, 'notes from the other device', reason: 'the form still showed the old notes');
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), {'title', 'created_at'});
     });
 
     test('saving without a change sends nothing', () async {
@@ -1028,6 +1059,22 @@ void main() {
       api.refusedForGood.add((await db.select(db.quests).getSingle()).id);
       await sync.syncOnce();
       expect(await sync.unsyncedChanges(), 0);
+    });
+  });
+
+  group('a connection too slow for a whole page', () {
+    test('gets smaller pages, and keeps them for later cycles', () async {
+      api.timeoutAbove = 300;
+      await sync.syncOnce();
+      expect(api.askedMaxRows, [null, 250]);
+      await sync.syncOnce();
+      expect(api.askedMaxRows.last, 250, reason: 'no minute wasted on a page it cannot finish');
+    });
+
+    test('gives up for this cycle below the smallest page', () async {
+      api.timeoutAbove = 10;
+      await expectLater(sync.syncOnce(), throwsA(isA<TimeoutException>()));
+      expect(api.askedMaxRows, [null, 250, 62]);
     });
   });
 

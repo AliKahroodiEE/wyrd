@@ -34,6 +34,32 @@ void main() {
     test('ends a notification settings update', () => givesUp((api) => api.updateNotificationPrefs(const {})));
   });
 
+  test('a pull asks for the server\'s page size unless told another', () async {
+    final requests = <http.Request>[];
+    final client = SupabaseClient(
+      'http://127.0.0.1:9',
+      'sb_publishable_test',
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        return http.Response(
+          '{"cursor":7,"has_more":false,"changes":{}}',
+          200,
+          request: request,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+      authOptions: const AuthClientOptions(autoRefreshToken: false),
+    );
+    addTearDown(client.dispose);
+    final api = SupabaseRemoteApi(client);
+
+    await api.pull(7);
+    expect(requests.last.url.path, '/rest/v1/rpc/sync_pull');
+    expect(jsonDecode(requests.last.body), {'cursor': 7});
+    await api.pull(7, maxRows: 250);
+    expect(jsonDecode(requests.last.body), {'cursor': 7, 'max_rows': 250});
+  });
+
   group('evaluate', () {
     late List<http.Request> requests;
 

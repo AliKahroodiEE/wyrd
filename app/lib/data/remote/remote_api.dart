@@ -8,7 +8,8 @@ abstract class RemoteApi {
   Future<List<Map<String, Object?>>> push(List<Map<String, Object?>> changes);
 
   /// Rows changed after [cursor]: `{cursor, has_more, changes: {table: [rows]}}`.
-  Future<Map<String, Object?>> pull(int cursor);
+  /// [maxRows] asks for smaller pages than the server's default.
+  Future<Map<String, Object?>> pull(int cursor, {int? maxRows});
 
   /// Authoritative evaluation: `{status, result, proposal, source, …}`, or
   /// null when the server could not evaluate yet (retried on next sync).
@@ -47,8 +48,10 @@ class SupabaseRemoteApi implements RemoteApi {
   }
 
   @override
-  Future<Map<String, Object?>> pull(int cursor) async {
-    final res = await _client.rpc<Map<String, dynamic>>('sync_pull', params: {'cursor': cursor}).timeout(_patience);
+  Future<Map<String, Object?>> pull(int cursor, {int? maxRows}) async {
+    final res = await _client
+        .rpc<Map<String, dynamic>>('sync_pull', params: {'cursor': cursor, 'max_rows': ?maxRows})
+        .timeout(_patience);
     return Map<String, Object?>.from(res);
   }
 

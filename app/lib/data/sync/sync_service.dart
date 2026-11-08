@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -290,7 +291,8 @@ class SyncService {
         if (q == null) return null;
         return {
           'entity': 'quest',
-          'op': 'upsert',
+          // A part of a row can never create it on the server.
+          'op': _changedFields(o) == null ? 'upsert' : 'patch',
           'id': q.id,
           'hlc': hlc,
           'payload': _changedPart(o, questPayload(q), keep: 'created_at'),
@@ -580,7 +582,16 @@ class SyncService {
     var applied = 0;
     while (true) {
       _checkStopped();
-      final res = await _api.pull(cursor);
+      final Map<String, Object?> res;
+      try {
+        res = await _api.pull(cursor, maxRows: _pageSize);
+      } on TimeoutException {
+        // The same page would time out the same way every cycle.
+        final smaller = (_pageSize ?? _defaultPageSize) ~/ 4;
+        if (smaller < _smallestPageSize) rethrow;
+        _pageSize = smaller;
+        continue;
+      }
       var next = (res['cursor'] as num?)?.toInt() ?? cursor;
       var held = false;
       applied += await _guarded(() async {
@@ -618,6 +629,12 @@ class SyncService {
     }
     return (applied, true);
   }
+
+  /// Rows asked for per page; null is the server's default. Stays smaller
+  /// for this session once a page took too long for the connection.
+  int? _pageSize;
+  static const _defaultPageSize = 1000;
+  static const _smallestPageSize = 50;
 
   /// Retries after which a waiting change stops holding the pull cursor.
   static const _holdAttempts = 3;
