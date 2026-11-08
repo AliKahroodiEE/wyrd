@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wyrd/features/quests/quest_limits.dart';
@@ -14,7 +15,21 @@ void main() {
     });
 
     test('refuses anything that is not one whole number', () {
-      for (final text in ['', '90-120', '1.5', '۱٫۵', '45 min', '-5', 'an hour', '999999']) {
+      for (final text in [
+        '',
+        '90-120',
+        '1.5',
+        '۱٫۵',
+        '1,5',
+        '5,10',
+        '۱٬۵',
+        '90,',
+        ',90',
+        '45 min',
+        '-5',
+        'an hour',
+        '999999',
+      ]) {
         expect(parseMinutes(text), isNull, reason: text);
       }
     });
@@ -36,6 +51,22 @@ void main() {
 
     test('counts a ZWNJ, which takes no place on screen', () {
       expect(limit.formatEditUpdate(typed(''), typed('می‌خواهم می‌خواهم')).text, 'می‌خواهم م');
+    });
+
+    test('does not cut older text that is only just over the limit while a word is composed', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android; // the enforced path
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final old = TextEditingValue(
+        text: 'a' * 12,
+        selection: const TextSelection.collapsed(offset: 6),
+        composing: const TextRange(start: 2, end: 6),
+      );
+      final backspace = TextEditingValue(
+        text: 'a' * 11,
+        selection: const TextSelection.collapsed(offset: 5),
+        composing: const TextRange(start: 2, end: 5),
+      );
+      expect(limit.formatEditUpdate(old, backspace).text, 'a' * 11, reason: 'only what was deleted goes');
     });
 
     test('keeps the text when full and lets text over the limit be shortened', () {

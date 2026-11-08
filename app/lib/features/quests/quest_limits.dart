@@ -57,7 +57,9 @@ class StoredLengthLimit extends TextInputFormatter {
     final before = oldValue.text.length;
     // Over the limit even without what an input method is still composing:
     // saved before the limit existed. Cutting it would lose what was written.
-    if (before - _composingLength(oldValue) > max) return length <= before ? newValue : oldValue;
+    // (Only where composing may overshoot: on the enforced path it never can.)
+    final saved = enforcement == MaxLengthEnforcement.enforced ? before : before - _composingLength(oldValue);
+    if (saved > max) return length <= before ? newValue : oldValue;
     // Otherwise the rules `maxLength` follows on this platform, in these units.
     switch (enforcement) {
       case MaxLengthEnforcement.none:
@@ -125,11 +127,12 @@ String? tooLongError(String text, int max, AppLocalizations l10n, AppFormatters 
     text.trim().length > max ? l10n.fieldTooLong(f.number(max)) : null;
 
 /// Whole minutes in Latin, Persian or Arabic-Indic digits, with or without
-/// a thousands separator ("90", "۹۰", "1,440"). Anything else is null: "90-120"
-/// or "1.5" are not read as 90120 or 15 by keeping only their digits.
+/// a thousands separator ("90", "۹۰", "1,440"). Anything else is null: "90-120",
+/// "1.5" or "1,5" are not read as 90120 or 15 by keeping only their digits.
 int? parseMinutes(String text) {
-  final digits = HeuristicEvaluator.normaliseText(text).replaceAll(RegExp(r'[,٬]'), '');
-  return RegExp(r'^\d{1,5}$').hasMatch(digits) ? int.parse(digits) : null;
+  final value = HeuristicEvaluator.normaliseText(text);
+  if (!RegExp(r'^(\d{1,5}|\d{1,2}[,٬]\d{3})$').hasMatch(value)) return null;
+  return int.parse(value.replaceAll(RegExp(r'[,٬]'), ''));
 }
 
 /// Whether [minutes] is an estimate a quest can hold.
