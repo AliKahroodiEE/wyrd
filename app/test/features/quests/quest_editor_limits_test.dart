@@ -28,6 +28,25 @@ void main() {
   Future<Quest> seed(WidgetTester tester, QuestDraft draft) async =>
       (await tester.runAsync(() => QuestRepository(db).create(draft)))!;
 
+  testWidgets('folded options cannot take the focus', (tester) async {
+    await pumpQuestPage(tester, db, const QuestEditorScreen());
+    final folded = tester.widget<ExcludeFocus>(
+      find
+          .ancestor(
+            of: find.byType(TextFormField, skipOffstage: false).last,
+            matching: find.byType(ExcludeFocus, skipOffstage: false),
+          )
+          .first,
+    );
+    expect(folded.excluding, isTrue, reason: 'Tab and an open keyboard must not land on invisible fields');
+
+    await tapVisible(tester, find.text('More options'));
+    final open = tester.widget<ExcludeFocus>(
+      find.ancestor(of: field(estimate), matching: find.byType(ExcludeFocus)).first,
+    );
+    expect(open.excluding, isFalse);
+  });
+
   testWidgets('estimated minutes take whole minutes from 1 to 1440 only', (tester) async {
     await pumpQuestPage(tester, db, const QuestEditorScreen());
     await tester.enterText(field(title), 'Study electronics');

@@ -335,89 +335,102 @@ class _QuestEditorScreenState extends ConsumerState<QuestEditorScreen> {
                       title: Text(l10n.moreOptions, style: text.labelLarge),
                       childrenPadding: const EdgeInsetsDirectional.only(bottom: AppSpace.md),
                       children: [
-                        TextFormField(
-                          controller: _estimate,
-                          keyboardType: TextInputType.number,
-                          autovalidateMode: AutovalidateMode.always,
-                          validator: (v) => estimateError(v ?? '', l10n, f),
-                          decoration: InputDecoration(labelText: l10n.fieldEstimate),
-                        ),
-                        const SizedBox(height: AppSpace.md),
-                        if (_tier != QuestTier.objective) ...[
-                          DropdownButtonFormField<Recurrence>(
-                            initialValue: _recurrence,
-                            decoration: InputDecoration(labelText: l10n.fieldRecurrence),
-                            items: [
-                              DropdownMenuItem(value: Recurrence.none, child: Text(l10n.recurrenceNone)),
-                              DropdownMenuItem(value: Recurrence.daily, child: Text(l10n.recurrenceDaily)),
-                              DropdownMenuItem(value: Recurrence.weekdays, child: Text(l10n.recurrenceWeekdays)),
-                              DropdownMenuItem(value: Recurrence.weekly, child: Text(l10n.recurrenceWeekly)),
-                            ],
-                            onChanged: (v) => setState(() => _recurrence = v ?? Recurrence.none),
-                          ),
-                          const SizedBox(height: AppSpace.md),
-                        ],
-                        DropdownButtonFormField<QuestCategory?>(
-                          initialValue: _category,
-                          decoration: InputDecoration(labelText: l10n.fieldCategory),
-                          items: [
-                            DropdownMenuItem(value: null, child: Text(l10n.categoryAuto)),
-                            for (final c in QuestCategory.values)
-                              DropdownMenuItem(value: c, child: Text(l10n.categoryName(c))),
-                          ],
-                          onChanged: (v) => setState(() => _category = v),
-                        ),
-                        const SizedBox(height: AppSpace.md),
-                        Text(l10n.fieldPriority, style: text.labelMedium),
-                        const SizedBox(height: AppSpace.sm),
-                        SegmentedButton<int>(
-                          showSelectedIcon: false,
-                          segments: [
-                            ButtonSegment(value: 0, label: Text(l10n.priorityLow)),
-                            ButtonSegment(value: 1, label: Text(l10n.priorityNormal)),
-                            ButtonSegment(value: 2, label: Text(l10n.priorityHigh)),
-                          ],
-                          selected: {_priority},
-                          onSelectionChanged: (s) => setState(() => _priority = s.first),
-                        ),
-                        const SizedBox(height: AppSpace.md),
-                        if (_tier != QuestTier.objective && objectives.isNotEmpty) ...[
-                          DropdownButtonFormField<String?>(
-                            initialValue: objectives.any((o) => o.quest.id == _parentId) ? _parentId : null,
-                            decoration: InputDecoration(labelText: l10n.fieldParent),
-                            items: [
-                              DropdownMenuItem(value: null, child: Text(l10n.parentNone)),
-                              for (final o in objectives)
-                                DropdownMenuItem(
-                                  value: o.quest.id,
-                                  child: Text(o.quest.title, overflow: TextOverflow.ellipsis),
+                        // Folded, the fields are invisible: Tab and an open
+                        // keyboard must not land on them.
+                        ListenableBuilder(
+                          listenable: _more,
+                          builder: (context, fields) => ExcludeFocus(excluding: !_more.isExpanded, child: fields!),
+                          child: Column(
+                            children: [
+                              TextFormField(
+                                controller: _estimate,
+                                keyboardType: TextInputType.number,
+                                autovalidateMode: AutovalidateMode.always,
+                                validator: (v) => estimateError(v ?? '', l10n, f),
+                                decoration: InputDecoration(labelText: l10n.fieldEstimate),
+                              ),
+                              const SizedBox(height: AppSpace.md),
+                              if (_tier != QuestTier.objective) ...[
+                                DropdownButtonFormField<Recurrence>(
+                                  initialValue: _recurrence,
+                                  decoration: InputDecoration(labelText: l10n.fieldRecurrence),
+                                  items: [
+                                    DropdownMenuItem(value: Recurrence.none, child: Text(l10n.recurrenceNone)),
+                                    DropdownMenuItem(value: Recurrence.daily, child: Text(l10n.recurrenceDaily)),
+                                    DropdownMenuItem(value: Recurrence.weekdays, child: Text(l10n.recurrenceWeekdays)),
+                                    DropdownMenuItem(value: Recurrence.weekly, child: Text(l10n.recurrenceWeekly)),
+                                  ],
+                                  onChanged: (v) => setState(() => _recurrence = v ?? Recurrence.none),
                                 ),
+                                const SizedBox(height: AppSpace.md),
+                              ],
+                              DropdownButtonFormField<QuestCategory?>(
+                                initialValue: _category,
+                                decoration: InputDecoration(labelText: l10n.fieldCategory),
+                                items: [
+                                  DropdownMenuItem(value: null, child: Text(l10n.categoryAuto)),
+                                  for (final c in QuestCategory.values)
+                                    DropdownMenuItem(value: c, child: Text(l10n.categoryName(c))),
+                                ],
+                                onChanged: (v) => setState(() => _category = v),
+                              ),
+                              const SizedBox(height: AppSpace.md),
+                              Text(l10n.fieldPriority, style: text.labelMedium),
+                              const SizedBox(height: AppSpace.sm),
+                              SegmentedButton<int>(
+                                showSelectedIcon: false,
+                                segments: [
+                                  ButtonSegment(value: 0, label: Text(l10n.priorityLow)),
+                                  ButtonSegment(value: 1, label: Text(l10n.priorityNormal)),
+                                  ButtonSegment(value: 2, label: Text(l10n.priorityHigh)),
+                                ],
+                                selected: {_priority},
+                                onSelectionChanged: (s) => setState(() => _priority = s.first),
+                              ),
+                              const SizedBox(height: AppSpace.md),
+                              if (_tier != QuestTier.objective && objectives.isNotEmpty) ...[
+                                DropdownButtonFormField<String?>(
+                                  initialValue: objectives.any((o) => o.quest.id == _parentId) ? _parentId : null,
+                                  decoration: InputDecoration(labelText: l10n.fieldParent),
+                                  items: [
+                                    DropdownMenuItem(value: null, child: Text(l10n.parentNone)),
+                                    for (final o in objectives)
+                                      DropdownMenuItem(
+                                        value: o.quest.id,
+                                        child: Text(o.quest.title, overflow: TextOverflow.ellipsis),
+                                      ),
+                                  ],
+                                  onChanged: (v) => setState(() => _parentId = v),
+                                ),
+                                const SizedBox(height: AppSpace.md),
+                              ],
+                              DropdownButtonFormField<ShareLevel>(
+                                initialValue: _share,
+                                decoration: InputDecoration(labelText: l10n.fieldSharing),
+                                items: [
+                                  DropdownMenuItem(value: ShareLevel.private, child: Text(l10n.share_private)),
+                                  DropdownMenuItem(
+                                    value: ShareLevel.completionOnly,
+                                    child: Text(l10n.share_completionOnly),
+                                  ),
+                                  DropdownMenuItem(value: ShareLevel.titleOnly, child: Text(l10n.share_titleOnly)),
+                                  DropdownMenuItem(value: ShareLevel.full, child: Text(l10n.share_full)),
+                                ],
+                                onChanged: (v) => setState(() => _share = v ?? ShareLevel.private),
+                              ),
+                              const SizedBox(height: AppSpace.md),
+                              TextFormField(
+                                controller: _notes,
+                                minLines: 2,
+                                maxLines: 6,
+                                inputFormatters: const [StoredLengthLimit(QuestLimits.notesMax)],
+                                buildCounter: lengthCounter(_notes, QuestLimits.notesMax, f),
+                                autovalidateMode: AutovalidateMode.always,
+                                validator: (v) => tooLongError(v ?? '', QuestLimits.notesMax, l10n, f),
+                                decoration: InputDecoration(labelText: l10n.fieldNotes),
+                              ),
                             ],
-                            onChanged: (v) => setState(() => _parentId = v),
                           ),
-                          const SizedBox(height: AppSpace.md),
-                        ],
-                        DropdownButtonFormField<ShareLevel>(
-                          initialValue: _share,
-                          decoration: InputDecoration(labelText: l10n.fieldSharing),
-                          items: [
-                            DropdownMenuItem(value: ShareLevel.private, child: Text(l10n.share_private)),
-                            DropdownMenuItem(value: ShareLevel.completionOnly, child: Text(l10n.share_completionOnly)),
-                            DropdownMenuItem(value: ShareLevel.titleOnly, child: Text(l10n.share_titleOnly)),
-                            DropdownMenuItem(value: ShareLevel.full, child: Text(l10n.share_full)),
-                          ],
-                          onChanged: (v) => setState(() => _share = v ?? ShareLevel.private),
-                        ),
-                        const SizedBox(height: AppSpace.md),
-                        TextFormField(
-                          controller: _notes,
-                          minLines: 2,
-                          maxLines: 6,
-                          inputFormatters: const [StoredLengthLimit(QuestLimits.notesMax)],
-                          buildCounter: lengthCounter(_notes, QuestLimits.notesMax, f),
-                          autovalidateMode: AutovalidateMode.always,
-                          validator: (v) => tooLongError(v ?? '', QuestLimits.notesMax, l10n, f),
-                          decoration: InputDecoration(labelText: l10n.fieldNotes),
                         ),
                       ],
                     ),
