@@ -354,6 +354,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get fieldTitleRequired => 'Give the quest a name.';
 
   @override
+  String fieldTooLong(String max) {
+    return 'Too long. Keep it to $max characters.';
+  }
+
+  @override
   String get fieldNotes => 'Notes';
 
   @override
@@ -406,6 +411,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get fieldEstimate => 'Estimated minutes';
+
+  @override
+  String fieldEstimateInvalid(String min, String max) {
+    return 'Enter whole minutes from $min to $max.';
+  }
 
   @override
   String get fieldIntention => 'When and where will you do it?';
@@ -554,6 +564,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get completeSheetMinutesHelp => 'Optional. Honest numbers keep your character honest.';
+
+  @override
+  String completeSheetMinutesInvalid(String max) {
+    return 'Enter whole minutes, up to $max.';
+  }
 
   @override
   String get completeSheetConfirm => 'Seal';
