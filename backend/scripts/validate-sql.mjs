@@ -696,6 +696,27 @@ async function smoke(db, { profileFields }) {
     `title=${merged.title}; notes=${merged.notes}`);
   check('row hlc tracks the newest clock', merged.hlc === hlc(t0 + 2000, 0, 'devB'));
 
+  // An edit goes up as the fields it changed (op 'patch'): it merges like an
+  // upsert, but part of a row can never create one (…_sync_quest_patch.sql).
+  const NEVER_SENT = '018f0000-0000-7000-8000-00000000fa01';
+  const patchMissing = (await one(db, 'authenticated', A, 'select public.sync_push($1) as r', [[
+    { entity: 'quest', op: 'patch', id: NEVER_SENT, hlc: hlc(t0 + 3000, 0, 'devA'), payload: { title: 'Renamed before it arrived' } },
+  ]])).r;
+  const patchMissingRows = await one(db, 'postgres', null, 'select count(*)::int as n from public.quests where id = $1', [NEVER_SENT]);
+  check('a partial edit of a quest the server does not have creates nothing',
+    patchMissing.results[0].status === 'rejected' && patchMissing.results[0].reason === 'invalid'
+      && patchMissing.results[0].retryable === false && patchMissingRows.n === 0,
+    JSON.stringify({ result: patchMissing.results[0], rows: patchMissingRows.n }));
+  const objectiveBefore = await one(db, 'postgres', null, 'select title, tier from public.quests where id = $1', [OBJECTIVE]);
+  const patchExisting = (await one(db, 'authenticated', A, 'select public.sync_push($1) as r', [[
+    { entity: 'quest', op: 'patch', id: OBJECTIVE, hlc: hlc(t0 + 3000, 0, 'devA'), payload: { notes: 'patched note' } },
+  ]])).r;
+  const objectiveAfter = await one(db, 'postgres', null, 'select title, tier, notes from public.quests where id = $1', [OBJECTIVE]);
+  check('a partial edit changes only the fields it carries',
+    patchExisting.results[0].status === 'applied' && objectiveAfter.notes === 'patched note'
+      && objectiveAfter.title === objectiveBefore.title && objectiveAfter.tier === objectiveBefore.tier,
+    JSON.stringify({ result: patchExisting.results[0], row: objectiveAfter }));
+
   const localDay = await one(db, 'postgres', null,
     `select local_day, (completed_at at time zone 'Asia/Tehran')::date as expected from public.completions where id = $1`, [DONE_1]);
   check('completion local_day is computed in the user time zone',

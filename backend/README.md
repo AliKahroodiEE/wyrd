@@ -271,6 +271,7 @@ and committed separately.
 | `20261104001040_drop_notify_webhooks.sql` | drops dashboard webhooks whose URL is the `notify` function (they would double every push); others stay |
 | `20261104001050_profile_account_set_at.sql` | `profiles.account_set_at`: when the name, weekly target, motivation or AI opt-in were last chosen, so a new device knows whether to take them over |
 | `20261104001060_sync_pull_self_contained_pages.sql` | `sync_pull`: each page also brings the quests of its subtasks and completions and the evaluations of its completions when they lie in another page, so a new device gets the whole history |
+| `20261104001070_sync_quest_patch.sql` | `sync_push` op `patch`: an edit of a quest, which merges its fields but can never create the quest |
 
 New migrations: create with `supabase migration new <name>`. Never edit an
 applied one. Every new table needs `enable row level security`, and every
@@ -321,7 +322,8 @@ until the grants match the code.
  { "entity": "completion", "op": "undo", "id": "<uuid>", "payload": { "undone_at": "…" } }]
 ```
 
-Entities: `quest` and `subtask` (`upsert` / `delete` = tombstone), `completion`
+Entities: `quest` (`upsert`, `patch` = an edit carrying only the fields it changed,
+which can never create the row, `delete` = tombstone), `subtask` (`upsert` / `delete`), `completion`
 (`insert`, `undo`), `provisional_ledger` (offline engine grants, kept for audit
 and marked `superseded`). Quests and subtasks merge field by field: a field
 changes only when the change's HLC is strictly newer than that field's
