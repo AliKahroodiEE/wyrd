@@ -165,12 +165,14 @@ old_record }`. No dashboard webhooks are needed. Earlier instructions had
 owners create three (INSERT on these tables → `/functions/v1/notify`);
 `…_drop_notify_webhooks.sql` removes them so pushes are not sent twice: only
 webhooks whose URL (the first `http_request` argument) has the path
-`/functions/v1/notify` right after its host, optionally followed by `/`, `?`
-or `#`; webhooks to
-other functions such as `notify-moderators`, and to other URLs, stay. Do not
-create new ones: the migration runs only once. A failing pg_net never fails
-the user's write. Other senders POST `{ user_id, category, template_key,
-params, guild_id? }` directly.
+`/functions/v1/notify` right after a non-empty host, optionally followed by
+`/`, `?` or `#`. The URL is read as pg_net's libcurl reads it: the scheme in
+any case (`HTTPS://`) and one to three slashes after it (`https:///…`, which
+the dashboard accepts). Webhooks to other functions such as
+`notify-moderators`, and to other URLs, stay. Do not create new ones: the
+migration runs only once. A failing pg_net never fails the user's write.
+Other senders POST `{ user_id, category, template_key, params, guild_id? }`
+directly.
 
 ## Flutter configuration
 
@@ -227,13 +229,19 @@ project's default privileges, which expose nothing) and drives
   (everything granted to all three roles) and requires identical privileges;
 * exercises pg_cron's dispatch and the notification triggers against
   stand-ins for pg_net and Vault (URL, headers, payload, failure isolation),
-  and checks that old dashboard webhooks to `notify` are dropped while the
-  triggers stay and webhooks to other URLs (`notify-moderators`, `notify`
-  named only in a later argument) and triggers without arguments survive (a
+  and checks that old dashboard webhooks to `notify` are dropped (also with
+  an uppercase scheme or one or three slashes) while the triggers stay and
+  webhooks to other URLs (`notify-moderators`, `notify` named only in a later
+  argument, an empty host) and triggers without arguments survive (a
   `supabase_functions` stand-in);
 * checks that reaction changes and deleted or hidden comments touch their
   feed event (`hall_changed_at`), and that `account_set_at` moves only when
-  the account's own settings change.
+  the account's own settings change;
+* pulls, in small pages, a history whose quests were edited after they were
+  done, and applies each page as the app does: every row arrives, each
+  page's `cursor` and `has_more` come from its own rows, and no subtask or
+  completion arrives without its quest, nor a completion without its
+  evaluation.
 
 It does not exercise real pg_cron, pg_net, Vault, Realtime or Storage.
 
@@ -262,6 +270,7 @@ and committed separately.
 | `20261104001030_reaction_rate_limit.sql` | `react` / `unreact`: at most 60 reaction changes per user per minute |
 | `20261104001040_drop_notify_webhooks.sql` | drops dashboard webhooks whose URL is the `notify` function (they would double every push); others stay |
 | `20261104001050_profile_account_set_at.sql` | `profiles.account_set_at`: when the name, weekly target, motivation or AI opt-in were last chosen, so a new device knows whether to take them over |
+| `20261104001060_sync_pull_self_contained_pages.sql` | `sync_pull`: each page also brings the quests of its subtasks and completions and the evaluations of its completions when they lie in another page, so a new device gets the whole history |
 
 New migrations: create with `supabase migration new <name>`. Never edit an
 applied one. Every new table needs `enable row level security`, and every
@@ -322,10 +331,17 @@ and lexicographically ordered. The response lists each change as `applied`,
 (`forbidden`, `missing_reference` + `retryable: true`, `conflict`, `invalid`).
 `completions.local_day` is always recomputed from `profiles.time_zone`.
 
-`sync_pull(cursor bigint default 0, max_rows int default 1000)` returns
-`{ cursor, has_more, server_time, changes: { profiles, characters, quests,
-subtasks, completions, evaluations, ledger_entries, achievements, day_stats,
-chronicles, notification_prefs } }`. Loop while `has_more`.
+`sync_pull(cursor bigint default 0, max_rows int default 1000)` returns the
+caller's rows with a `change_id` above `cursor`, oldest first and at most
+`max_rows` across all tables, as `{ cursor, has_more, server_time, changes:
+{ profiles, characters, quests, subtasks, completions, evaluations,
+ledger_entries, achievements, day_stats, chronicles, notification_prefs } }`.
+Loop while `has_more`, passing the returned `cursor`. Each page can be applied
+on its own: it also brings the quest of every subtask and completion in it
+whose own `change_id` comes in a later page (an edit moves a quest behind its
+older completions), and the evaluation of every completion in it that lies
+in another page. These extra rows never move `cursor` or `has_more`; each is
+also sent in its own page.
 
 ### RPC reference (callable by signed-in users)
 
