@@ -14,6 +14,9 @@ import 'package:wyrd/l10n/generated/app_localizations.dart';
 
 import 'fake_auth_gateway.dart';
 
+/// Modal barriers in the tree: one for each page and each dialog.
+int _barriers() => find.byType(ModalBarrier, skipOffstage: false).evaluate().length;
+
 void main() {
   Future<(FakeAuthGateway, ProviderContainer)> pump(WidgetTester tester, {Locale locale = const Locale('en')}) async {
     final gateway = FakeAuthGateway();
@@ -22,6 +25,10 @@ void main() {
         GoRoute(
           path: '/',
           builder: (_, _) => const Scaffold(body: Text('character page')),
+        ),
+        GoRoute(
+          path: '/guilds',
+          builder: (_, _) => const Scaffold(body: Text('guilds page')),
         ),
       ],
     );
@@ -77,6 +84,37 @@ void main() {
     expect(gateway.calls, ['signOut']);
   });
 
+  testWidgets('only Keep signs out: a dialog closed unanswered asks again', (tester) async {
+    final (gateway, container) = await pump(tester);
+    final answer = container
+        .read(handoverProvider.notifier)
+        .ask(Handover(previousEmail: 'arin@example.com', unsynced: 3));
+    await settle(tester);
+    final dialog = tester.element(find.text('Unsaved changes from another account'));
+
+    // Back and the barrier leave it as it is.
+    await tester.binding.handlePopRoute();
+    await settle(tester);
+    await tester.tapAt(const Offset(4, 4));
+    await settle(tester);
+    expect(dialog.mounted, isTrue);
+
+    // A notification opens another screen: the page under the dialog goes,
+    // and the dialog with it, unanswered.
+    container.read(routerProvider).go('/guilds');
+    await settle(tester);
+    expect(find.text('guilds page'), findsOneWidget);
+    expect(dialog.mounted, isFalse);
+    expect(find.text('Unsaved changes from another account'), findsOneWidget);
+    expect(gateway.calls, isEmpty);
+
+    await tester.tap(find.text('Keep them and sign out'));
+    await settle(tester);
+    expect(await answer, isFalse);
+    expect(gateway.calls, ['signOut']);
+    expect(find.text('Unsaved changes from another account'), findsNothing);
+  });
+
   testWidgets('Persian: the question reads right to left with the address isolated', (tester) async {
     final (_, container) = await pump(tester, locale: const Locale('fa'));
     final answer = container
@@ -91,7 +129,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('a question whose sign-in ended closes without signing anyone out', (tester) async {
+  testWidgets('a withdrawn question closes without signing anyone out', (tester) async {
     final (gateway, container) = await pump(tester);
     final question = Handover(previousEmail: 'arin@example.com', unsynced: 3);
     final answer = container.read(handoverProvider.notifier).ask(question);
@@ -103,6 +141,44 @@ void main() {
     expect(find.text('Unsaved changes from another account'), findsNothing);
     expect(await answer, isFalse);
     expect(question.withdrawn, isTrue);
+    expect(gateway.calls, isEmpty);
+  });
+
+  testWidgets('a question withdrawn before its dialog was first drawn closes too', (tester) async {
+    final (gateway, container) = await pump(tester);
+    final pages = _barriers();
+    final notifier = container.read(handoverProvider.notifier);
+    final question = Handover(previousEmail: 'arin@example.com', unsynced: 3);
+    final answer = notifier.ask(question);
+    notifier.withdraw(question); // no frame in between, as in a web tab in the background
+    await settle(tester);
+    expect(find.text('Unsaved changes from another account'), findsNothing);
+    expect(_barriers(), pages, reason: 'nothing is left over the page');
+    expect(await answer, isFalse);
+    expect(gateway.calls, isEmpty);
+  });
+
+  testWidgets('a stale dialog under a newer one closes, and the newer one closes when withdrawn', (tester) async {
+    final (gateway, container) = await pump(tester);
+    final pages = _barriers();
+    final notifier = container.read(handoverProvider.notifier);
+    final stale = Handover(previousEmail: 'arin@example.com', unsynced: 3);
+    final staleAnswer = notifier.ask(stale);
+    notifier.withdraw(stale); // that sign-in ended before its dialog was drawn
+    final newer = Handover(previousEmail: 'bryn@example.com', unsynced: 1);
+    final newerAnswer = notifier.ask(newer); // and the next one began
+    await tester.pump(); // both dialogs are built
+    final dialog = tester.element(find.textContaining('bryn@example.com'));
+    await settle(tester);
+    expect(await staleAnswer, isFalse);
+    expect(dialog.mounted, isTrue, reason: 'the newer dialog is never the one closed');
+    expect(find.byType(AlertDialog), findsOneWidget);
+
+    notifier.withdraw(newer);
+    await settle(tester);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(_barriers(), pages, reason: 'nothing is left over the page');
+    expect(await newerAnswer, isFalse);
     expect(gateway.calls, isEmpty);
   });
 }

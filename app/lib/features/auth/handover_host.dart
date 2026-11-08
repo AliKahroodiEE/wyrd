@@ -21,20 +21,26 @@ class HandoverHost extends ConsumerStatefulWidget {
 
 class _HandoverHostState extends ConsumerState<HandoverHost> {
   Handover? _showing;
-  BuildContext? _dialog;
+
+  /// The route of the dialog asking [_showing], from its first build on.
+  Route<Object?>? _dialog;
 
   @override
   void initState() {
     super.initState();
     ref.listenManual<Handover?>(handoverProvider, (_, next) {
       final showing = _showing;
-      // A withdrawn question (its sign-in ended) closes without an answer.
-      if (showing != null && showing.withdrawn && !identical(next, showing)) {
-        final dialog = _dialog;
-        if (dialog != null && dialog.mounted) Navigator.of(dialog).pop();
-      }
+      // A withdrawn question (its sign-in ended, or another tab removed the
+      // work) closes without an answer.
+      if (showing != null && showing.withdrawn && !identical(next, showing)) _close(_dialog);
       if (next != null && !identical(next, _showing)) _show(next);
     }, fireImmediately: true);
+  }
+
+  /// Closes [route]'s dialog where it is: popping would close whichever
+  /// dialog is on top, which may be a newer question's.
+  static void _close(Route<Object?>? route) {
+    if (route != null && route.isActive) route.navigator?.removeRoute(route);
   }
 
   Future<void> _show(Handover handover) async {
@@ -48,35 +54,60 @@ class _HandoverHostState extends ConsumerState<HandoverHost> {
       });
       return;
     }
+    Route<Object?>? mine;
     final remove = await showDialog<bool>(
       context: navigator,
       barrierDismissible: false,
       builder: (context) {
-        _dialog = context;
+        if (mine == null) {
+          final route = ModalRoute.of(context);
+          if (handover.withdrawn) {
+            // Withdrawn after the push but before this first build (a web
+            // tab in the background draws no frames), when the listener had
+            // no route to close yet.
+            WidgetsBinding.instance.addPostFrameCallback((_) => _close(route));
+            return const SizedBox.shrink();
+          }
+          _dialog = mine = route;
+        }
         final l10n = context.l10n;
         final changes = handover.unsynced == 1
             ? l10n.handoverOneChange
             : l10n.handoverChanges(ref.fmt(context).number(handover.unsynced));
         final email = handover.previousEmail;
-        return AlertDialog(
-          title: Text(l10n.handoverTitle),
-          content: Text(
-            // The address is isolated so it reads left to right in Persian.
-            email == null ? l10n.handoverBodyNoEmail(changes) : l10n.handoverBody('\u2068$email\u2069', changes),
+        // Only the buttons answer: back and the barrier leave it open.
+        return PopScope<bool>(
+          canPop: false,
+          child: AlertDialog(
+            title: Text(l10n.handoverTitle),
+            content: Text(
+              // The address is isolated so it reads left to right in Persian.
+              email == null ? l10n.handoverBodyNoEmail(changes) : l10n.handoverBody('\u2068$email\u2069', changes),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: Text(l10n.handoverKeep)),
+              FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(l10n.handoverRemove)),
+            ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: Text(l10n.handoverKeep)),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(l10n.handoverRemove)),
-          ],
         );
       },
     );
-    _dialog = null;
+    // Only this dialog's: a newer one may already have been drawn.
+    if (identical(_dialog, mine)) _dialog = null;
     if (handover.withdrawn) {
       if (identical(_showing, handover)) _showing = null;
       return;
     }
-    if (remove != true && mounted) {
+    if (remove == null) {
+      // Closed unanswered: the page under it was replaced (a notification
+      // opened another screen, or onboarding took over after another tab
+      // cleared the device). That is no Keep; it is asked again while it
+      // still applies.
+      if (identical(_showing, handover)) _showing = null;
+      if (mounted && identical(ref.read(handoverProvider), handover)) _show(handover);
+      return;
+    }
+    if (!remove && mounted) {
       final gateway = ref.read(authGatewayProvider);
       if (gateway != null) {
         try {
@@ -87,7 +118,7 @@ class _HandoverHostState extends ConsumerState<HandoverHost> {
         }
       }
     }
-    handover.decide(remove: remove == true);
+    handover.decide(remove: remove);
     if (identical(_showing, handover)) _showing = null;
   }
 

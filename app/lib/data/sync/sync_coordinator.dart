@@ -59,8 +59,8 @@ class Handover {
   final int unsynced;
   final _answer = Completer<bool>();
 
-  /// Set when the sign-in that asked has ended: the question no longer
-  /// applies, and nobody is signed out for it.
+  /// Set when the question no longer applies: the sign-in that asked has
+  /// ended, or another tab has removed the work. Nobody is signed out for it.
   bool get withdrawn => _withdrawn;
   bool _withdrawn = false;
 
@@ -97,7 +97,7 @@ class HandoverNotifier extends Notifier<Handover?> {
     }
   }
 
-  /// Takes [handover] back: its sign-in ended before the answer came.
+  /// Takes [handover] back: it stopped applying before the answer came.
   void withdraw(Handover handover) {
     handover._withdraw();
     if (identical(state, handover)) state = null;
@@ -107,16 +107,21 @@ class HandoverNotifier extends Notifier<Handover?> {
 /// The app's one [SyncControl].
 final syncControlProvider = Provider<SyncControl>((ref) => SyncControl());
 
+/// The server sync talks to, or null in a build without a backend.
+final syncApiProvider = Provider<RemoteApi?>((ref) {
+  final client = ref.watch(supabaseClientProvider);
+  return client == null ? null : SupabaseRemoteApi(client);
+});
+
 /// Runs sync while a user is signed in: at sign-in, shortly after every
 /// local change, and every two minutes (ADR-003). Network failures are
 /// silent and retried; the app keeps working locally.
 final syncCoordinatorProvider = Provider<void>((ref) {
   final user = ref.watch(currentUserProvider).value;
-  final client = ref.watch(supabaseClientProvider);
-  if (user == null || client == null) return;
+  final api = ref.watch(syncApiProvider);
+  if (user == null || api == null) return;
 
   final db = ref.watch(databaseProvider);
-  final api = SupabaseRemoteApi(client);
   final ai = ref.read(aiSettingsRepositoryProvider);
   final service = SyncService(
     db,
@@ -138,6 +143,29 @@ final syncCoordinatorProvider = Provider<void>((ref) {
   var again = false;
   Timer? debounce;
 
+  /// Asks [asked] and waits for the answer. The web app's tabs share this
+  /// database: once another one has claimed the device for this account
+  /// (Remove was chosen there), the work is gone, and the question is
+  /// withdrawn here rather than answered again.
+  Future<bool> ask(Handover asked) async {
+    Future<void> check() async {
+      try {
+        if (await service.owner() == user.id) handover.withdraw(asked);
+      } on Object {
+        // Unreadable for now: the question stays until it is answered.
+      }
+    }
+
+    final claims = db.tableUpdates(TableUpdateQuery.onTable(db.keyValues)).listen((_) => unawaited(check()));
+    try {
+      final answer = handover.ask(asked);
+      unawaited(check()); // claimed before this listened
+      return await answer;
+    } finally {
+      unawaited(claims.cancel());
+    }
+  }
+
   Future<SyncReport> cycle() async {
     if (!claimed) {
       await previous; // the account before must have stopped writing
@@ -147,15 +175,24 @@ final syncCoordinatorProvider = Provider<void>((ref) {
         // after asking when some of it never reached that account.
         final unsynced = await service.unsyncedChanges();
         if (unsynced > 0) {
-          final asked = question = Handover(previousEmail: await service.ownerEmail(), unsynced: unsynced);
-          final remove = await handover.ask(asked);
+          final email = await service.ownerEmail();
+          // This sign-in may have ended while the account before stopped or
+          // these were read: nobody is left to ask. Nothing waits between
+          // this check and the question, so a sign-in that ends later finds
+          // the question and withdraws it.
+          if (service.isStopped) throw const SyncStopped();
+          final asked = question = Handover(previousEmail: email, unsynced: unsynced);
+          final remove = await ask(asked);
           question = null;
-          // Kept (this account is signed out again), or this sign-in ended
-          // while the question was open: either way nothing is removed.
-          if (!remove || service.isStopped) throw const SyncStopped();
+          // Kept (this account is signed out again) or withdrawn: nothing is
+          // removed here. After a claim in another tab, the next cycle syncs.
+          if (!remove) throw const SyncStopped();
         }
         // Its AI key goes first: if anything stops the claim, the next
-        // attempt still finds the other owner and clears again.
+        // attempt still finds the other owner and clears again. A sign-in
+        // that has ended clears nothing, even when Remove was chosen after
+        // it ended.
+        if (service.isStopped) throw const SyncStopped();
         await ai.clear();
       }
       await service.claimFor(user.id, email: user.email);
@@ -188,7 +225,13 @@ final syncCoordinatorProvider = Provider<void>((ref) {
     }
   }
 
-  final sub = db.tableUpdates(TableUpdateQuery.onAllTables([db.outboxEntries])).listen((_) {
+  // A local change adds an outbox entry (QuestRepository and
+  // ProgressionRepository only ever insert). Sync's own bookkeeping updates
+  // and deletes entries, as does a wipe; reacting to that would resend a
+  // change the server keeps asking to retry every 2 s, for good. It waits
+  // for the next cycle instead.
+  final localChanges = TableUpdateQuery.onTable(db.outboxEntries, limitUpdateKind: UpdateKind.insert);
+  final sub = db.tableUpdates(localChanges).listen((_) {
     debounce?.cancel();
     debounce = Timer(const Duration(seconds: 2), () => unawaited(run()));
   });
