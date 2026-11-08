@@ -16,6 +16,7 @@ import '../../design/components/motion.dart';
 import '../../design/tokens.dart';
 import '../../l10n/content.dart';
 import '../rewards/reward_view.dart';
+import 'quest_limits.dart';
 import 'quest_timer.dart';
 
 /// Completes [quest]: asks for minutes (optional), runs the engine, then
@@ -72,23 +73,27 @@ class _MinutesInput {
   final int? minutes;
 }
 
-class _MinutesSheet extends StatefulWidget {
+class _MinutesSheet extends ConsumerStatefulWidget {
   const _MinutesSheet({required this.quest});
   final Quest quest;
 
   @override
-  State<_MinutesSheet> createState() => _MinutesSheetState();
+  ConsumerState<_MinutesSheet> createState() => _MinutesSheetState();
 }
 
-class _MinutesSheetState extends State<_MinutesSheet> {
+class _MinutesSheetState extends ConsumerState<_MinutesSheet> {
+  final _form = GlobalKey<FormState>();
   late final TextEditingController _minutes;
 
   @override
   void initState() {
     super.initState();
-    final guess =
-        widget.quest.estimatedMinutes ??
-        HeuristicEvaluator.extractMinutes(HeuristicEvaluator.normaliseText(widget.quest.title));
+    // The plan, else a duration in the title; never one a completion cannot
+    // hold (an estimate saved before estimates were checked, "30 hours").
+    final guess = [
+      widget.quest.estimatedMinutes,
+      HeuristicEvaluator.extractMinutes(HeuristicEvaluator.normaliseText(widget.quest.title)),
+    ].firstWhere(isEstimate, orElse: () => null);
     _minutes = TextEditingController(text: guess?.toString() ?? '');
   }
 
@@ -99,13 +104,16 @@ class _MinutesSheetState extends State<_MinutesSheet> {
   }
 
   void _submit() {
-    final v = int.tryParse(HeuristicEvaluator.normaliseText(_minutes.text).replaceAll(RegExp(r'[^0-9]'), ''));
-    Navigator.of(context).pop(_MinutesInput(v != null && v > 0 ? v.clamp(1, 960) : null));
+    if (!_form.currentState!.validate()) return;
+    final minutes = parseMinutes(_minutes.text);
+    // Zero, like no answer, leaves the plan to speak for the deed.
+    Navigator.of(context).pop(_MinutesInput(minutes != null && minutes > 0 ? minutes : null));
   }
 
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
+    final f = ref.fmt(context);
     final text = Theme.of(context).textTheme;
     return Padding(
       padding: EdgeInsetsDirectional.only(
@@ -113,28 +121,33 @@ class _MinutesSheetState extends State<_MinutesSheet> {
         end: AppSpace.xl,
         bottom: MediaQuery.viewInsetsOf(context).bottom + AppSpace.xl,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(l10n.completeSheetTitle, style: text.titleLarge),
-          const SizedBox(height: AppSpace.xs),
-          UserText(widget.quest.title, style: text.bodyMedium),
-          const SizedBox(height: AppSpace.xl),
-          TextField(
-            controller: _minutes,
-            autofocus: true,
-            keyboardType: TextInputType.number,
-            textInputAction: TextInputAction.done,
-            onSubmitted: (_) => _submit(),
-            decoration: InputDecoration(
-              labelText: l10n.completeSheetMinutes,
-              helperText: l10n.completeSheetMinutesHelp,
+      child: Form(
+        key: _form,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(l10n.completeSheetTitle, style: text.titleLarge),
+            const SizedBox(height: AppSpace.xs),
+            UserText(widget.quest.title, style: text.bodyMedium),
+            const SizedBox(height: AppSpace.xl),
+            TextFormField(
+              controller: _minutes,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
+              autovalidateMode: AutovalidateMode.onUserInteraction,
+              validator: (v) => declaredMinutesError(v ?? '', l10n, f),
+              onFieldSubmitted: (_) => _submit(),
+              decoration: InputDecoration(
+                labelText: l10n.completeSheetMinutes,
+                helperText: l10n.completeSheetMinutesHelp,
+              ),
             ),
-          ),
-          const SizedBox(height: AppSpace.xl),
-          FilledButton(onPressed: _submit, child: Text(l10n.completeSheetConfirm)),
-        ],
+            const SizedBox(height: AppSpace.xl),
+            FilledButton(onPressed: _submit, child: Text(l10n.completeSheetConfirm)),
+          ],
+        ),
       ),
     );
   }
