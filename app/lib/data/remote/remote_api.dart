@@ -35,15 +35,20 @@ class SupabaseRemoteApi implements RemoteApi {
 
   final SupabaseClient _client;
 
+  /// A connection that dies silently never answers, and the sync cycle
+  /// waiting for it would hold up every later one until the app restarts.
+  /// Generous, for slow links: sending a change again is harmless.
+  static const _patience = Duration(seconds: 60);
+
   @override
   Future<List<Map<String, Object?>>> push(List<Map<String, Object?>> changes) async {
-    final res = await _client.rpc<Map<String, dynamic>>('sync_push', params: {'changes': changes});
+    final res = await _client.rpc<Map<String, dynamic>>('sync_push', params: {'changes': changes}).timeout(_patience);
     return [for (final r in (res['results'] as List? ?? const [])) Map<String, Object?>.from(r as Map)];
   }
 
   @override
   Future<Map<String, Object?>> pull(int cursor) async {
-    final res = await _client.rpc<Map<String, dynamic>>('sync_pull', params: {'cursor': cursor});
+    final res = await _client.rpc<Map<String, dynamic>>('sync_pull', params: {'cursor': cursor}).timeout(_patience);
     return Map<String, Object?>.from(res);
   }
 
@@ -55,10 +60,12 @@ class SupabaseRemoteApi implements RemoteApi {
   }) async {
     final FunctionResponse res;
     try {
-      res = await _client.functions.invoke(
-        'evaluate-completion',
-        body: {'completion_id': completionId, 'client_proposal': ?clientProposal, 'client_model': ?clientModel},
-      );
+      res = await _client.functions
+          .invoke(
+            'evaluate-completion',
+            body: {'completion_id': completionId, 'client_proposal': ?clientProposal, 'client_model': ?clientModel},
+          )
+          .timeout(_patience);
     } on FunctionException catch (e) {
       // evaluate-completion answers 409 completion_undone for a completion
       // that is no longer active, and no retry changes that. Every other
@@ -75,10 +82,10 @@ class SupabaseRemoteApi implements RemoteApi {
   Future<void> updateProfile(Map<String, Object?> fields) async {
     final uid = _client.auth.currentUser?.id;
     if (uid == null) return;
-    await _client.from('profiles').update(fields).eq('id', uid);
+    await _client.from('profiles').update(fields).eq('id', uid).timeout(_patience);
   }
 
   @override
   Future<void> updateNotificationPrefs(Map<String, Object?> prefs) =>
-      _client.rpc<void>('set_notification_prefs', params: prefs);
+      _client.rpc<void>('set_notification_prefs', params: prefs).timeout(_patience);
 }
