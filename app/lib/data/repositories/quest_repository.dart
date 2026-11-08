@@ -193,42 +193,51 @@ class QuestRepository {
     return (await byId(id))!;
   }
 
-  Future<void> update(String id, QuestDraft d) => _db.transaction(() async {
-    final q = await (_db.select(_db.quests)..where((q) => q.id.equals(id))).getSingleOrNull();
-    if (q == null) return;
+  /// Saves the fields of [d] that differ from [base], what the person started
+  /// from (by default the row as it is now). A field left alone keeps its
+  /// current value, which another device may have changed while a form was
+  /// open.
+  Future<void> update(String id, QuestDraft d, {QuestDraft? base}) => _db.transaction(() async {
+    final current = await byId(id);
+    if (current == null) return;
+    final from = base ?? QuestDraft.fromQuest(current);
+    final title = d.title.trim();
+    final notes = d.notes.trim();
+    final intention = _blankToNull(d.intention);
     final dueAt = _dateOnly(d.dueAt);
-    final dueChanged = q.dueAt?.millisecondsSinceEpoch != dueAt?.millisecondsSinceEpoch;
+    final dueChanged = from.dueAt?.millisecondsSinceEpoch != dueAt?.millisecondsSinceEpoch;
     // The server's names for what this save changes (see _enqueue).
     final fields = <String>[
-      if (q.parentId != d.parentId) 'parent_id',
-      if (q.tier != d.tier.name) 'tier',
-      if (q.title != d.title.trim()) 'title',
-      if (q.notes != d.notes.trim()) 'notes',
-      if (q.category != d.category?.name) 'category',
-      if (q.priority != d.priority) 'priority',
+      if (from.parentId != d.parentId) 'parent_id',
+      if (from.tier != d.tier) 'tier',
+      if (from.title.trim() != title) 'title',
+      if (from.notes.trim() != notes) 'notes',
+      if (from.category != d.category) 'category',
+      if (from.priority != d.priority) 'priority',
       if (dueChanged) 'due_at',
-      if (q.estimatedMinutes != d.estimatedMinutes) 'estimated_minutes',
-      if (q.recurrence != d.recurrence.name) 'recurrence',
-      if (q.intention != _blankToNull(d.intention)) 'intention',
-      if (q.shareLevel != d.shareLevel.name) 'share_level',
+      if (from.estimatedMinutes != d.estimatedMinutes) 'estimated_minutes',
+      if (from.recurrence != d.recurrence) 'recurrence',
+      if (_blankToNull(from.intention) != intention) 'intention',
+      if (from.shareLevel != d.shareLevel) 'share_level',
       // A reminder falls on the due date, so it moves with it.
-      if (q.remindAt != d.remindAt || (dueChanged && d.remindAt != null)) 'reminder_at',
+      if (from.remindAt != d.remindAt || (dueChanged && d.remindAt != null)) 'reminder_at',
     ];
     if (fields.isEmpty) return;
+    Value<T> changed<T>(String field, T value) => fields.contains(field) ? Value(value) : Value<T>.absent();
     await (_db.update(_db.quests)..where((q) => q.id.equals(id))).write(
       QuestsCompanion(
-        parentId: Value(d.parentId),
-        tier: Value(d.tier.name),
-        title: Value(d.title.trim()),
-        notes: Value(d.notes.trim()),
-        category: Value(d.category?.name),
-        priority: Value(d.priority),
-        dueAt: Value(dueAt),
-        estimatedMinutes: Value(d.estimatedMinutes),
-        recurrence: Value(d.recurrence.name),
-        intention: Value(_blankToNull(d.intention)),
-        shareLevel: Value(d.shareLevel.name),
-        remindAt: Value(d.remindAt),
+        parentId: changed('parent_id', d.parentId),
+        tier: changed('tier', d.tier.name),
+        title: changed('title', title),
+        notes: changed('notes', notes),
+        category: changed('category', d.category?.name),
+        priority: changed('priority', d.priority),
+        dueAt: changed('due_at', dueAt),
+        estimatedMinutes: changed('estimated_minutes', d.estimatedMinutes),
+        recurrence: changed('recurrence', d.recurrence.name),
+        intention: changed('intention', intention),
+        shareLevel: changed('share_level', d.shareLevel.name),
+        remindAt: changed('reminder_at', d.remindAt),
         updatedAt: Value(_now()),
       ),
     );

@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' show Value;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wyrd/data/db/database.dart';
@@ -124,6 +125,24 @@ void main() {
     await tester.enterText(field('Notes'), '👨‍👩‍👧‍👦' * 600);
     await tester.pump();
     expect(fieldText(tester, 'Notes'), '👨‍👩‍👧‍👦' * 181, reason: 'whole emoji only, 11 units each');
+    await closeDatabase(tester, db);
+  });
+
+  testWidgets('saving keeps what another device changed while the form was open', (tester) async {
+    final quest = await seed(tester, const QuestDraft(title: 'Write report', notes: 'first notes'));
+    await pumpQuestPage(tester, db, QuestEditorScreen(questId: quest.id));
+    await tester.runAsync(
+      () => (db.update(
+        db.quests,
+      )..where((q) => q.id.equals(quest.id))).write(const QuestsCompanion(notes: Value('notes from the other device'))),
+    );
+
+    await tester.enterText(field(title), 'Write the report');
+    await tapVisible(tester, find.text('Save changes'));
+
+    final saved = (await quests(tester)).single;
+    expect(saved.title, 'Write the report');
+    expect(saved.notes, 'notes from the other device');
     await closeDatabase(tester, db);
   });
 

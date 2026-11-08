@@ -117,7 +117,8 @@ class _QuestEditorScreenState extends ConsumerState<QuestEditorScreen> {
     setState(() => _saving = true);
     final repo = ref.read(questRepositoryProvider);
     if (_editing) {
-      await repo.update(widget.questId!, _draft());
+      final opened = _existing;
+      await repo.update(widget.questId!, _draft(), base: opened == null ? null : QuestDraft.fromQuest(opened));
     } else {
       await repo.create(_draft());
     }
