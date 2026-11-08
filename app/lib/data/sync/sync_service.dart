@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:drift/drift.dart';
+import 'package:flutter/widgets.dart' show Characters;
 import 'package:wyrd_engine/wyrd_engine.dart';
 
 import '../db/database.dart';
@@ -91,6 +92,7 @@ class SyncService {
   static const _cursorKey = 'sync_cursor';
   static const _nodeKey = 'sync_node';
   static const _pendingEvalKey = 'sync_pending_evaluations';
+  static const _droppedKey = 'sync_dropped';
   static const _ownerKey = 'sync_owner';
   static const _ownerEmailKey = 'sync_owner_email';
 
@@ -194,7 +196,10 @@ class SyncService {
       for (final o in batch) {
         final change = await _envelope(o, node);
         if (change == null) {
-          await _guarded(() => (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go());
+          await _guarded(() async {
+            await (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go();
+            await _settleDropped(o, taken: false);
+          });
           continue;
         }
         changes.add(change);
@@ -212,11 +217,18 @@ class SyncService {
           final o = rows[i];
           final r = i < results.length ? results[i] : const <String, Object?>{};
           final status = r['status'];
+          // An undo the server cannot place, of a completion no longer
+          // waiting to go up (refused for good), can never succeed.
+          final orphanedUndo =
+              c['op'] == 'undo' &&
+              r['reason'] == 'missing_reference' &&
+              await _pendingAttempts('completion', o.entityId) == null;
           if (status == 'applied' || status == 'ignored') {
             pushed++;
             await (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go();
+            await _settleDropped(o, taken: status == 'applied');
             if (c['entity'] == 'completion' && c['op'] == 'insert') completionIds.add(c['id']! as String);
-          } else if (r['retryable'] == true || status == null) {
+          } else if (!orphanedUndo && (r['retryable'] == true || status == null)) {
             await (_db.update(
               _db.outboxEntries,
             )..where((x) => x.id.equals(o.id))).write(OutboxEntriesCompanion(attempts: Value(o.attempts + 1)));
@@ -224,12 +236,43 @@ class SyncService {
           } else {
             rejected++;
             await (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go();
+            await _settleDropped(o, taken: false);
           }
         }
         await _addPendingEvaluations(completionIds);
       });
     }
     return (pushed, rejected);
+  }
+
+  /// A change of this device for a row that a pull dropped (see [_pull]) is
+  /// done with. If the server took it ([taken]), the row has a new change_id
+  /// and comes down with the next pull. If the server kept its own version
+  /// ('ignored', or a refusal that is final), that version gets no new
+  /// change_id, so once nothing else waits to go up for the row the cursor
+  /// goes back to just before it and the next pull fetches it again.
+  Future<void> _settleDropped(OutboxRow o, {required bool taken}) async {
+    final dropped = await _droppedRows();
+    final key = '${o.entity}:${o.entityId}';
+    final changeId = dropped.remove(key);
+    if (changeId == null) return;
+    if (!taken) {
+      if (await _pendingAttempts(o.entity, o.entityId) != null) return; // the last one to settle decides
+      final cursor = (await _read(_cursorKey) as num?)?.toInt() ?? 0;
+      if (changeId - 1 < cursor) await _write(_cursorKey, changeId - 1);
+    }
+    await _write(_droppedKey, dropped);
+  }
+
+  /// Rows a pull dropped while their change waited to go up:
+  /// `{'quest:<id>': lowest change_id dropped}`.
+  Future<Map<String, int>> _droppedRows() async {
+    final v = await _read(_droppedKey);
+    return {
+      if (v is Map)
+        for (final e in v.entries)
+          if (e.value is num) '${e.key}': (e.value as num).toInt(),
+    };
   }
 
   Future<Map<String, Object?>?> _envelope(OutboxRow o, String node) async {
@@ -249,7 +292,7 @@ class SyncService {
           'hlc': hlc,
           'payload': {
             'quest_id': s.questId,
-            'title': s.title,
+            'title': _fitText(s.title, 200),
             'done': s.done,
             'position': s.position,
             'deleted_at': s.deletedAt?.toUtc().toIso8601String(),
@@ -267,8 +310,10 @@ class SyncService {
             'quest_id': c.questId,
             'occurrence_day': c.occurrenceDay,
             'completed_at': c.completedAt.toUtc().toIso8601String(),
-            'declared_minutes': c.declaredMinutes,
-            'tracked_minutes': c.trackedMinutes,
+            // At most a day each (completions_declared_minutes and
+            // completions_tracked_minutes); a timer left running is longer.
+            'declared_minutes': c.declaredMinutes?.clamp(0, 1440),
+            'tracked_minutes': c.trackedMinutes?.clamp(0, 1440),
           },
         };
       case 'completion_undo':
@@ -283,24 +328,32 @@ class SyncService {
     return null;
   }
 
-  /// Server representation of a local quest row.
+  /// Server representation of a local quest row, within the checks of
+  /// public.quests (…_core_schema.sql): a value outside them would be
+  /// refused for good, and the quest, its subtasks and completions would
+  /// never reach the server. Texts are cut to the server's length, an
+  /// estimate outside 1 to 1440 minutes goes up as none, priority stays
+  /// within 0 to 3, tier, category and status are ones the server knows,
+  /// and a quest is never its own parent.
   static Map<String, Object?> questPayload(QuestRow q) {
     final anchor = q.dueAt ?? q.createdAt;
     final reminder = q.remindAt == null
         ? null
         : DateTime(anchor.year, anchor.month, anchor.day, q.remindAt! ~/ 60, q.remindAt! % 60);
+    final estimate = q.estimatedMinutes;
+    final intention = q.intention;
     return {
-      'parent_id': q.parentId,
-      'tier': q.tier,
-      'title': q.title,
-      'notes': q.notes,
-      'category': q.category,
-      'priority': q.priority,
-      'status': q.status,
+      'parent_id': q.parentId == q.id ? null : q.parentId,
+      'tier': _tiers.contains(q.tier) ? q.tier : 'daily',
+      'title': _fitText(q.title, 200),
+      'notes': _fitText(q.notes, 4000),
+      'category': _categories.contains(q.category) ? q.category : null,
+      'priority': q.priority.clamp(0, 3),
+      'status': _statuses.contains(q.status) ? q.status : 'active',
       'due_at': q.dueAt?.toUtc().toIso8601String(),
-      'estimated_minutes': q.estimatedMinutes,
+      'estimated_minutes': estimate != null && estimate >= 1 && estimate <= 1440 ? estimate : null,
       'recurrence': q.recurrence == 'none' ? null : {'kind': q.recurrence},
-      'intention': q.intention,
+      'intention': intention == null ? null : _fitText(intention, 280),
       'share_level': _shareToServer[q.shareLevel] ?? 'private',
       'reminder_at': reminder?.toUtc().toIso8601String(),
       'deleted_at': q.deletedAt?.toUtc().toIso8601String(),
@@ -314,6 +367,45 @@ class SyncService {
     'completionOnly': 'completion_only',
     'private': 'private',
   };
+
+  // What public.quests takes: the quest_tier and quest_category types and
+  // the quests_status check.
+  static const _tiers = {'daily', 'contract', 'objective'};
+  static const _categories = {
+    'study',
+    'work',
+    'fitness',
+    'health',
+    'creative',
+    'social',
+    'chores',
+    'admin',
+    'mindfulness',
+    'reading',
+    'other',
+  };
+  static const _statuses = {'active', 'completed', 'paused', 'archived'};
+
+  /// [text] as a server text column of at most [max] characters takes it.
+  /// The server counts code points (char_length); the cut falls between
+  /// characters as people see them, never inside an emoji or between a
+  /// letter and its marks. Only a first character longer than [max] on its
+  /// own (a letter under hundreds of marks) is cut inside, rather than
+  /// leaving nothing. NUL is left out: no jsonb value can hold it, so it
+  /// would fail the whole push.
+  static String _fitText(String text, int max) {
+    final clean = text.contains('\u0000') ? text.replaceAll('\u0000', '') : text;
+    if (clean.runes.length <= max) return clean;
+    var points = 0;
+    var end = 0;
+    for (final c in Characters(clean)) {
+      final n = c.runes.length;
+      if (points + n > max) break;
+      points += n;
+      end += c.length;
+    }
+    return end == 0 ? String.fromCharCodes(clean.runes.take(max)) : clean.substring(0, end);
+  }
 
   /// Fixed-width, lexicographically ordered HLC:
   /// `<ISO-8601 UTC millis>-<4 hex counter>-<node>`.
@@ -375,6 +467,11 @@ class SyncService {
 
   // ------------------------------------------------------------- evaluate
 
+  /// Asks the server to evaluate the completions this device sent. A
+  /// completion that was undone (here, or on another device: the pull
+  /// before this has applied that) or that is gone needs no evaluation and
+  /// leaves the list without asking; so does one the server reports undone.
+  /// Anything else that fails is asked again next cycle.
   Future<int> _evaluatePending() async {
     final pending = await _pendingEvaluations();
     var done = 0;
@@ -382,6 +479,8 @@ class SyncService {
     for (final id in pending) {
       _checkStopped();
       try {
+        final completion = await (_db.select(_db.completions)..where((c) => c.id.equals(id))).getSingleOrNull();
+        if (completion == null || completion.state == 'undone') continue;
         // Proposals made with the user's own AI travel with the request;
         // the server validates and bounds them (it never sees the key).
         final local = await (_db.select(_db.evaluations)..where((e) => e.completionId.equals(id))).getSingleOrNull();
@@ -394,6 +493,7 @@ class SyncService {
           clientProposal: clientProposal,
           clientModel: clientProposal == null ? null : await _clientModel?.call(),
         );
+        if (res?['status'] == 'undone') continue; // the next pull brings the undo, if it has not yet
         final result = res?['result'];
         final proposal = res?['proposal'];
         if (result is Map && proposal is Map) {
@@ -439,7 +539,9 @@ class SyncService {
   /// pull ends there: the next cycle sends the change first and then gets
   /// the row again, so the server's winning version is never lost. A change
   /// the server has refused [_holdAttempts] times no longer holds anything
-  /// up; its row is skipped as before.
+  /// up: its row is dropped and the cursor moves on, but the row is noted
+  /// in the same transaction, so it is fetched again if that change ends
+  /// without the server taking it ([_settleDropped]).
   Future<(int, bool)> _pull(List<SyncedSettings> settings) async {
     var cursor = (await _read(_cursorKey) as num?)?.toInt() ?? 0;
     var applied = 0;
@@ -450,9 +552,9 @@ class SyncService {
       var held = false;
       applied += await _guarded(() async {
         final changes = (res['changes'] as Map?) ?? const {};
-        final skipped = <int>[];
-        var n = await _applyQuests((changes['quests'] as List?) ?? const [], skipped);
-        n += await _applySubtasks((changes['subtasks'] as List?) ?? const [], skipped);
+        final left = _Left();
+        var n = await _applyQuests((changes['quests'] as List?) ?? const [], left);
+        n += await _applySubtasks((changes['subtasks'] as List?) ?? const [], left);
         final proposals = <String, Map<String, Object?>>{
           for (final e in ((changes['evaluations'] as List?) ?? const []).whereType<Map<Object?, Object?>>())
             if (e['completion_id'] is String && e['proposal'] is Map)
@@ -466,13 +568,14 @@ class SyncService {
             await _adopt(s, Map<String, Object?>.from(row));
           }
         }
-        if (skipped.isNotEmpty) {
-          final hold = skipped.reduce(min) - 1;
+        if (left.held.isNotEmpty) {
+          final hold = left.held.reduce(min) - 1;
           if (hold < next) {
             next = hold < cursor ? cursor : hold;
             held = true;
           }
         }
+        if (left.dropped.isNotEmpty) await _noteDropped(left.dropped);
         await _write(_cursorKey, next);
         return n;
       });
@@ -486,7 +589,7 @@ class SyncService {
   /// Retries after which a waiting change stops holding the pull cursor.
   static const _holdAttempts = 3;
 
-  Future<int> _applyQuests(List<Object?> rows, List<int> skipped) async {
+  Future<int> _applyQuests(List<Object?> rows, _Left left) async {
     var n = 0;
     for (final raw in rows.whereType<Map<Object?, Object?>>()) {
       final r = Map<String, Object?>.from(raw);
@@ -494,7 +597,7 @@ class SyncService {
       if (id == null) continue;
       final attempts = await _pendingAttempts('quest', id);
       if (attempts != null) {
-        if (attempts < _holdAttempts) _skip(r, skipped);
+        _leave('quest', id, r, attempts, left);
         continue;
       }
       DateTime? ts(String k) => r[k] is String ? DateTime.parse(r[k]! as String).toLocal() : null;
@@ -536,7 +639,7 @@ class SyncService {
     'private': 'private',
   };
 
-  Future<int> _applySubtasks(List<Object?> rows, List<int> skipped) async {
+  Future<int> _applySubtasks(List<Object?> rows, _Left left) async {
     var n = 0;
     for (final raw in rows.whereType<Map<Object?, Object?>>()) {
       final r = Map<String, Object?>.from(raw);
@@ -545,7 +648,7 @@ class SyncService {
       if (id == null || questId == null) continue;
       final attempts = await _pendingAttempts('subtask', id);
       if (attempts != null) {
-        if (attempts < _holdAttempts) _skip(r, skipped);
+        _leave('subtask', id, r, attempts, left);
         continue;
       }
       final quest = await (_db.select(_db.quests)..where((q) => q.id.equals(questId))).getSingleOrNull();
@@ -648,11 +751,29 @@ class SyncService {
     return true;
   }
 
-  /// Notes a row left for later (see [_pull]); rows without a change_id
-  /// cannot hold the cursor.
-  static void _skip(Map<String, Object?> row, List<int> skipped) {
+  /// Leaves a pulled row alone while a change of this device for it waits
+  /// to go up: the row holds the cursor, or after [_holdAttempts] refusals
+  /// it is dropped and noted (see [_pull]). Rows without a change_id can do
+  /// neither.
+  static void _leave(String entity, String id, Map<String, Object?> row, int attempts, _Left left) {
     final changeId = row['change_id'];
-    if (changeId is num) skipped.add(changeId.toInt());
+    if (changeId is! num) return;
+    if (attempts < _holdAttempts) {
+      left.held.add(changeId.toInt());
+    } else {
+      final known = left.dropped['$entity:$id'];
+      left.dropped['$entity:$id'] = known == null ? changeId.toInt() : min(known, changeId.toInt());
+    }
+  }
+
+  /// Notes rows a pull dropped, keeping the lowest change_id of each.
+  Future<void> _noteDropped(Map<String, int> rows) async {
+    final dropped = await _droppedRows();
+    for (final MapEntry(:key, :value) in rows.entries) {
+      final known = dropped[key];
+      dropped[key] = known == null ? value : min(known, value);
+    }
+    await _write(_droppedKey, dropped);
   }
 
   /// How often the server already asked to retry this device's waiting
@@ -693,4 +814,15 @@ class SyncService {
 
   Future<void> _write(String key, Object? value) =>
       _db.into(_db.keyValues).insertOnConflictUpdate(KeyValuesCompanion.insert(key: key, value: jsonEncode(value)));
+}
+
+/// Pulled rows a page leaves alone because this device still has a change
+/// to send for them (see [SyncService._pull]).
+class _Left {
+  /// change_ids of the rows that hold the cursor.
+  final held = <int>[];
+
+  /// Rows dropped after [SyncService._holdAttempts] refusals, by
+  /// `entity:id`, with the change_id they came with.
+  final dropped = <String, int>{};
 }

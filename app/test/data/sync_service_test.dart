@@ -27,11 +27,27 @@ class FakeApi implements RemoteApi {
   /// Ids the server keeps its own, newer version of ('ignored').
   final ignored = <String>{};
 
-  /// Ids the server refuses for now, every time ('retryable').
+  /// Ids the server refuses for now, every time ('retryable'). Undos are
+  /// answered as below.
   final refusedForNow = <String>{};
+
+  /// Ids the server refuses for good ('invalid', not retryable). Undos are
+  /// answered as below.
+  final refusedForGood = <String>{};
+
+  /// Completions the server has: each one it takes adds its id. Like
+  /// undo_completion_internal, it answers an undo of any other completion
+  /// 'missing_reference', retryable; [ignored] means it was already undone.
+  final completions = <String>{};
+
+  /// Every change sent, whatever the answer.
+  final sent = <Map<String, Object?>>[];
   var evaluateCalls = 0;
   var pushCalls = 0;
   var pullCalls = 0;
+
+  /// The cursor of every pull, in order.
+  final pulledFrom = <int>[];
 
   /// Holds a pull until it completes.
   Future<void>? pullGate;
@@ -40,29 +56,40 @@ class FakeApi implements RemoteApi {
   @override
   Future<List<Map<String, Object?>>> push(List<Map<String, Object?>> changes) async {
     pushCalls++;
+    sent.addAll(changes);
     if (failRetryable) {
       return [
         for (final c in changes) {'id': c['id'], 'status': 'rejected', 'retryable': true},
       ];
     }
     final from = retryableFrom ?? changes.length;
-    bool refused(int i) => i >= from || refusedForNow.contains(changes[i]['id']);
-    pushed.addAll([
-      for (var i = 0; i < changes.length; i++)
-        if (!refused(i)) changes[i],
-    ]);
-    return [
-      for (var i = 0; i < changes.length; i++)
-        refused(i)
-            ? {'id': changes[i]['id'], 'status': 'rejected', 'retryable': true}
-            : {'id': changes[i]['id'], 'status': ignored.contains(changes[i]['id']) ? 'ignored' : 'applied'},
-    ];
+    return [for (var i = 0; i < changes.length; i++) _answer(changes[i], waits: i >= from)];
+  }
+
+  /// One change, in order: what the server takes counts for the changes
+  /// after it in the same batch.
+  Map<String, Object?> _answer(Map<String, Object?> change, {required bool waits}) {
+    final id = change['id'];
+    final undo = change['entity'] == 'completion' && change['op'] == 'undo';
+    Map<String, Object?> refused(String reason, {bool retryable = false}) => {
+      'id': id,
+      'status': 'rejected',
+      'reason': reason,
+      if (retryable) 'retryable': true,
+    };
+    if (waits || (!undo && refusedForNow.contains(id))) return refused('missing_reference', retryable: true);
+    if (!undo && refusedForGood.contains(id)) return refused('invalid');
+    if (undo && !completions.contains(id)) return refused('missing_reference', retryable: true);
+    pushed.add(change);
+    if (change['entity'] == 'completion' && change['op'] == 'insert') completions.add(id! as String);
+    return {'id': id, 'status': ignored.contains(id) ? 'ignored' : 'applied'};
   }
 
   /// Like the server: only what changed after [cursor].
   @override
   Future<Map<String, Object?>> pull(int cursor) async {
     pullCalls++;
+    pulledFrom.add(cursor);
     if (pullGate != null) await pullGate;
     final next = (pullResponse['cursor']! as num).toInt();
     if (cursor >= next) return {'cursor': cursor, 'has_more': false, 'changes': <String, Object?>{}};
@@ -91,6 +118,52 @@ class FakeApi implements RemoteApi {
 
   @override
   Future<void> updateNotificationPrefs(Map<String, Object?> prefs) async => notificationPrefs.add(prefs);
+}
+
+/// Pages like sync_pull: the rows after the cursor in change_id order,
+/// [pageSize] a page, plus the quest of every subtask and completion in a
+/// page even when that quest's change_id lies beyond the page's cursor (it
+/// comes again in its own page).
+class PagingApi extends FakeApi {
+  PagingApi(this.rows, {this.pageSize = 3});
+
+  /// The server's rows, each with the table it is pulled from.
+  final List<(String, Map<String, Object?>)> rows;
+  final int pageSize;
+
+  /// Every page as it was served.
+  final pages = <Map<String, Object?>>[];
+
+  /// Runs before the page after [cursor] is served.
+  Future<void> Function(int cursor)? beforePage;
+
+  @override
+  Future<Map<String, Object?>> pull(int cursor) async {
+    pullCalls++;
+    pulledFrom.add(cursor);
+    await beforePage?.call(cursor);
+    int changeId(Map<String, Object?> row) => row['change_id']! as int;
+    final after = [
+      for (final r in rows)
+        if (changeId(r.$2) > cursor) r,
+    ]..sort((a, b) => changeId(a.$2).compareTo(changeId(b.$2)));
+    final page = after.take(pageSize).toList();
+    final next = page.isEmpty ? cursor : changeId(page.last.$2);
+    final parents = {
+      for (final (table, row) in page)
+        if (table == 'subtasks' || table == 'completions') row['quest_id'],
+    };
+    final changes = <String, List<Map<String, Object?>>>{};
+    for (final (table, row) in page) {
+      (changes[table] ??= []).add(row);
+    }
+    for (final (table, row) in rows) {
+      if (table == 'quests' && changeId(row) > next && parents.contains(row['id'])) (changes['quests'] ??= []).add(row);
+    }
+    final res = {'cursor': next, 'has_more': after.length > pageSize, 'changes': changes};
+    pages.add(res);
+    return res;
+  }
 }
 
 Map<String, Object?> serverResult(int discipline) => {
@@ -379,6 +452,252 @@ void main() {
       await sync.syncOnce();
       expect((await quests.byId(id))!.title, 'Y', reason: 'fetched again once the edit went up');
     });
+
+    group('a row dropped after three refusals', () {
+      const other = '018f0000-0000-7000-8000-0000000000ab';
+      const completion = '018f0000-0000-7000-8000-0000000000c2';
+
+      Future<int?> cursor() async {
+        final row = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).getSingleOrNull();
+        return row == null ? null : int.parse(row.value);
+      }
+
+      Future<int> ledgerRows() async => (await db.select(db.ledgerEntries).get()).length;
+
+      /// The change waiting for the row is refused three times; then another
+      /// device's newer version arrives with later rows. It no longer holds
+      /// the cursor, so it is dropped and the cursor moves past it.
+      Future<void> dropIt() async {
+        api.refusedForNow.add(id);
+        for (var i = 0; i < 3; i++) {
+          await sync.syncOnce();
+        }
+        api.pullResponse = {
+          'cursor': 20,
+          'has_more': false,
+          'changes': {
+            'quests': [
+              serverRow('Y', 18),
+              {...serverRow('Made elsewhere', 19), 'id': other},
+            ],
+            'completions': [
+              {
+                'id': completion,
+                'quest_id': other,
+                'occurrence_day': '2026-11-04',
+                'completed_at': '2026-11-04T06:00:00Z',
+                'state': 'active',
+                'result': serverResult(11),
+                'change_id': 20,
+              },
+            ],
+            'evaluations': [
+              {'completion_id': completion, 'proposal': serverProposal()},
+            ],
+          },
+        };
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, isNot('Y'), reason: 'dropped');
+        expect(await quests.byId(other), isNotNull);
+        expect(await cursor(), 20);
+      }
+
+      test('comes down once the server keeps its own version', () async {
+        await editHere();
+        await dropIt();
+        final ledger = await ledgerRows();
+        api
+          ..refusedForNow.remove(id)
+          ..ignored.add(id);
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, 'Y');
+        expect(await db.select(db.outboxEntries).get(), isEmpty);
+        expect(await cursor(), 20);
+        // The later rows came again and changed nothing.
+        expect(api.pulledFrom.last, 17);
+        expect(await ledgerRows(), ledger);
+        expect(await db.select(db.evaluations).get(), hasLength(1));
+        expect(await progression.attributeTotals(), {Attribute.discipline: 11});
+      });
+
+      test('comes down once the server refuses the change for good', () async {
+        await editHere();
+        await dropIt();
+        api
+          ..refusedForNow.remove(id)
+          ..refusedForGood.add(id);
+        final report = await sync.syncOnce();
+        expect(report.rejected, 1);
+        expect((await quests.byId(id))!.title, 'Y');
+      });
+
+      test('is not fetched again when the server took the change', () async {
+        await editHere();
+        await dropIt();
+        api.refusedForNow.remove(id);
+        await sync.syncOnce(); // applied: the merged row comes with a new change_id
+        expect(api.pulledFrom.last, 20, reason: 'no step back');
+        final note = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_dropped'))).getSingle();
+        expect(note.value, '{}');
+      });
+
+      test('waits for the last change still waiting for the row', () async {
+        await editHere();
+        await quests.update(id, const QuestDraft(title: 'X2'));
+        await dropIt();
+        api
+          ..refusedForNow.remove(id)
+          ..ignored.add(id)
+          ..retryableFrom = 1; // the first change is answered, the second still waits
+        await sync.syncOnce();
+        expect(await db.select(db.outboxEntries).get(), hasLength(1));
+        expect((await quests.byId(id))!.title, 'X2', reason: 'its own change still has to go up');
+        expect(api.pulledFrom.last, 20);
+
+        api.retryableFrom = null;
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, 'Y');
+      });
+    });
+  });
+
+  group('a page that carries a child\'s quest before the quest\'s own page', () {
+    const subtask = '018f0000-0000-7000-8000-0000000000d1';
+    const first = '018f0000-0000-7000-8000-0000000000d2';
+    const other = '018f0000-0000-7000-8000-0000000000d3';
+    const second = '018f0000-0000-7000-8000-0000000000d4';
+
+    /// A quest completed for a while and edited since (change_id 9), so its
+    /// subtask and completion lie in the first page and the quest in the
+    /// last; another quest with its completion fills the page between.
+    List<(String, Map<String, Object?>)> history(String quest) => [
+      (
+        'subtasks',
+        {
+          'id': subtask,
+          'quest_id': quest,
+          'title': 'Chapter 1',
+          'done': true,
+          'position': 0,
+          'updated_at': '2026-11-01T05:00:00Z',
+          'change_id': 2,
+        },
+      ),
+      (
+        'completions',
+        {
+          'id': first,
+          'quest_id': quest,
+          'occurrence_day': '2026-11-01',
+          'local_day': '2026-11-01',
+          'completed_at': '2026-11-01T06:00:00Z',
+          'state': 'active',
+          'result': serverResult(5),
+          'change_id': 3,
+        },
+      ),
+      ('evaluations', {'completion_id': first, 'proposal': serverProposal(), 'change_id': 4}),
+      (
+        'quests',
+        {
+          'id': other,
+          'tier': 'daily',
+          'title': 'Other',
+          'created_at': '2026-11-01T05:00:00Z',
+          'updated_at': '2026-11-01T05:00:00Z',
+          'change_id': 5,
+        },
+      ),
+      (
+        'completions',
+        {
+          'id': second,
+          'quest_id': other,
+          'occurrence_day': '2026-11-02',
+          'local_day': '2026-11-02',
+          'completed_at': '2026-11-02T06:00:00Z',
+          'state': 'active',
+          'result': serverResult(3),
+          'change_id': 6,
+        },
+      ),
+      ('day_stats', {'local_day': '2026-11-02', 'change_id': 7}),
+      (
+        'quests',
+        {
+          'id': quest,
+          'tier': 'daily',
+          'title': 'Read (edited elsewhere)',
+          'recurrence': {'kind': 'daily'},
+          'created_at': '2026-10-01T05:00:00Z',
+          'updated_at': '2026-11-03T05:00:00Z',
+          'change_id': 9,
+        },
+      ),
+    ];
+
+    Future<int?> cursor() async {
+      final row = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).getSingleOrNull();
+      return row == null ? null : int.parse(row.value);
+    }
+
+    Future<List<List<Object>>> snapshot() async => [
+      await db.select(db.quests).get(),
+      await db.select(db.subtasks).get(),
+      await db.select(db.completions).get(),
+      await db.select(db.evaluations).get(),
+      await db.select(db.ledgerEntries).get(),
+    ];
+
+    test('a new device gets the children with their quest, and the quest again changes nothing', () async {
+      const quest = '018f0000-0000-7000-8000-0000000000d0';
+      final server = PagingApi(history(quest));
+      final paged = SyncService(db, server, progression);
+      List<List<Object>>? beforeAgain;
+      server.beforePage = (from) async {
+        if (from == 7) beforeAgain = await snapshot(); // the quest's own page comes next
+      };
+
+      await paged.syncOnce();
+
+      final firstPage = server.pages.first['changes']! as Map<String, List<Map<String, Object?>>>;
+      expect(firstPage['quests']!.map((q) => q['id']), [quest], reason: 'delivered with its children');
+      expect(server.pulledFrom, [0, 4, 7], reason: 'each page continues from the page\'s cursor');
+      expect(await cursor(), 9);
+      expect((await quests.byId(quest))!.title, 'Read (edited elsewhere)');
+      expect((await db.select(db.subtasks).getSingle()).questId, quest);
+      expect((await db.select(db.completions).get()).map((c) => c.questId).toSet(), {quest, other});
+      expect(await progression.attributeTotals(), {Attribute.discipline: 8});
+      expect(await snapshot(), beforeAgain, reason: 'the quest\'s own page changed nothing');
+
+      await paged.syncOnce();
+      expect(server.pulledFrom.last, 9);
+      expect(await db.select(db.evaluations).get(), hasLength(2));
+      expect(await db.select(db.ledgerEntries).get(), hasLength(2));
+    });
+
+    test('a quest with a change waiting here is left alone and holds the cursor only in its own page', () async {
+      final mine = await quests.create(const QuestDraft(title: 'Read'));
+      final server = PagingApi(history(mine.id))..refusedForNow.add(mine.id);
+      final paged = SyncService(db, server, progression);
+
+      await paged.syncOnce();
+
+      expect((await quests.byId(mine.id))!.title, 'Read', reason: 'the edit here still has to go up');
+      expect((await db.select(db.subtasks).getSingle()).questId, mine.id);
+      expect(await progression.attributeTotals(), {Attribute.discipline: 8});
+      expect(server.pulledFrom, [0, 4, 7], reason: 'the early copy did not move or hold the first page\'s cursor');
+      expect(await cursor(), 8, reason: 'held just before the quest by its own page');
+
+      server
+        ..refusedForNow.remove(mine.id)
+        ..ignored.add(mine.id); // the edit elsewhere is newer
+      await paged.syncOnce();
+      expect(server.pulledFrom.last, 8);
+      expect((await quests.byId(mine.id))!.title, 'Read (edited elsewhere)');
+      expect(await cursor(), 9);
+      expect(await db.select(db.ledgerEntries).get(), hasLength(2));
+    });
   });
 
   test('a stopped cycle makes no more network calls', () async {
@@ -500,6 +819,76 @@ void main() {
     expect(await sync.unsyncedChanges(), 1);
   });
 
+  group('completions undone before their evaluation', () {
+    test('an undo that goes up with its completion leaves nothing unsynced', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      final outcome = await progression.complete(q, provisional: true);
+      expect(await progression.undo(outcome!.completionId), isTrue);
+      await sync.syncOnce(); // the completion and its undo go up together
+      expect(await db.select(db.outboxEntries).get(), isEmpty);
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, 0, reason: 'an undone completion is never evaluated');
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 0);
+    });
+
+    test('an undo pulled from another device ends the wait for the evaluation', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      final outcome = await progression.complete(q, provisional: true);
+      await sync.syncOnce(); // it went up; its evaluation could not run
+      expect(await sync.unsyncedChanges(), 1);
+      final calls = api.evaluateCalls;
+      final local = await db.select(db.completions).getSingle();
+      api.pullResponse = {
+        'cursor': 60,
+        'has_more': false,
+        'changes': {
+          'completions': [
+            {
+              'id': outcome!.completionId,
+              'quest_id': q.id,
+              'occurrence_day': local.occurrenceDay,
+              'completed_at': local.completedAt.toUtc().toIso8601String(),
+              'state': 'undone',
+              'undone_at': local.completedAt.toUtc().toIso8601String(),
+              'change_id': 60,
+            },
+          ],
+        },
+      };
+      await sync.syncOnce();
+      expect((await db.select(db.completions).getSingle()).state, 'undone');
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, calls, reason: 'nothing is left to evaluate');
+    });
+
+    test('a completion no longer on this device leaves the wait without a request', () async {
+      await db
+          .into(db.keyValues)
+          .insert(
+            KeyValuesCompanion.insert(
+              key: 'sync_pending_evaluations',
+              value: '["018f0000-0000-7000-8000-0000000000c9"]',
+            ),
+          );
+      expect(await sync.unsyncedChanges(), 1);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, 0);
+    });
+
+    test('the server\'s answer that a completion was undone is final', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      await progression.complete(q, provisional: true);
+      api.evaluation = {'status': 'undone'}; // undone elsewhere after this cycle's pull
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 1);
+      expect(await sync.unsyncedChanges(), 0);
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 1, reason: 'not asked again');
+    });
+  });
+
   test('the owner and its unsynced changes are known before another account claims the device', () async {
     expect(await sync.owner(), isNull);
     await sync.claimFor('user-a', email: 'a@example.com');
@@ -515,6 +904,52 @@ void main() {
     final watch = Stopwatch()..start();
     await control.stop();
     expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+  });
+
+  group('an undo of a completion the server never took', () {
+    late String completionId;
+
+    Future<void> completeAndUndo() async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      completionId = (await progression.complete(q, provisional: true))!.completionId;
+      expect(await progression.undo(completionId), isTrue);
+    }
+
+    test('goes with its completion when the server refuses that for good', () async {
+      await completeAndUndo();
+      api.refusedForGood.add(completionId);
+      await sync.syncOnce(); // one batch: the completion, then its undo
+
+      expect(api.sent.where((c) => c['op'] == 'undo'), hasLength(1));
+      expect(await sync.unsyncedChanges(), 0, reason: 'an undo that can never succeed is not unsynced work');
+      final sent = api.sent.length;
+      await sync.syncOnce();
+      expect(api.sent.length, sent, reason: 'nothing is left to send');
+    });
+
+    test('goes too when it is made after the refusal', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      completionId = (await progression.complete(q, provisional: true))!.completionId;
+      api.refusedForGood.add(completionId);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+
+      expect(await progression.undo(completionId), isTrue);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+    });
+
+    test('keeps waiting while its completion still waits to go up', () async {
+      await completeAndUndo();
+      api.refusedForNow.add(completionId);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 2, reason: 'the completion and its undo both wait');
+
+      api.refusedForNow.clear();
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.pushed.where((c) => c['op'] == 'undo'), hasLength(1), reason: 'the undo reached the server');
+    });
   });
 
   group('account settings', () {
