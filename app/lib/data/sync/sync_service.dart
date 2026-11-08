@@ -233,6 +233,13 @@ class SyncService {
               _db.outboxEntries,
             )..where((x) => x.id.equals(o.id))).write(OutboxEntriesCompanion(attempts: Value(o.attempts + 1)));
             waiting.add(o.id);
+          } else if (r['reason'] == 'invalid' && _changedFields(o) != null) {
+            // Part of a row the server may not have at all (its first
+            // version was refused), so the whole row goes up next time.
+            await (_db.update(_db.outboxEntries)..where((x) => x.id.equals(o.id))).write(
+              OutboxEntriesCompanion(payload: Value(jsonEncode({'id': o.entityId}))),
+            );
+            waiting.add(o.id);
           } else {
             rejected++;
             await (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go();
@@ -281,7 +288,13 @@ class SyncService {
       case 'quest':
         final q = await (_db.select(_db.quests)..where((x) => x.id.equals(o.entityId))).getSingleOrNull();
         if (q == null) return null;
-        return {'entity': 'quest', 'op': 'upsert', 'id': q.id, 'hlc': hlc, 'payload': questPayload(q)};
+        return {
+          'entity': 'quest',
+          'op': 'upsert',
+          'id': q.id,
+          'hlc': hlc,
+          'payload': _changedPart(o, questPayload(q), keep: 'created_at'),
+        };
       case 'subtask':
         final s = await (_db.select(_db.subtasks)..where((x) => x.id.equals(o.entityId))).getSingleOrNull();
         if (s == null) return null;
@@ -290,13 +303,13 @@ class SyncService {
           'op': 'upsert',
           'id': s.id,
           'hlc': hlc,
-          'payload': {
+          'payload': _changedPart(o, {
             'quest_id': s.questId,
             'title': _fitText(s.title, 200),
             'done': s.done,
             'position': s.position,
             'deleted_at': s.deletedAt?.toUtc().toIso8601String(),
-          },
+          }, keep: 'quest_id'),
         };
       case 'completion':
         final c = await (_db.select(_db.completions)..where((x) => x.id.equals(o.entityId))).getSingleOrNull();
@@ -326,6 +339,26 @@ class SyncService {
         };
     }
     return null;
+  }
+
+  /// The part of [payload] that [o] changed, and [keep], which the server
+  /// needs to create the row. The server merges field by field under the
+  /// change's clock, so sending the whole row would put back whatever another
+  /// device changed in the other fields meanwhile.
+  static Map<String, Object?> _changedPart(OutboxRow o, Map<String, Object?> payload, {required String keep}) {
+    final fields = _changedFields(o);
+    if (fields == null) return payload;
+    return {
+      for (final e in payload.entries)
+        if (fields.contains(e.key) || e.key == keep) e.key: e.value,
+    };
+  }
+
+  /// The server's names for what [o] changed, or null for the whole row.
+  static List<String>? _changedFields(OutboxRow o) {
+    final payload = jsonDecode(o.payload);
+    final fields = payload is Map ? payload['fields'] : null;
+    return fields is List ? fields.whereType<String>().toList() : null;
   }
 
   /// Server representation of a local quest row, within the checks of

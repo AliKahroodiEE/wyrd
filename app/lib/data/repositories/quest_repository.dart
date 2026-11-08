@@ -194,6 +194,27 @@ class QuestRepository {
   }
 
   Future<void> update(String id, QuestDraft d) => _db.transaction(() async {
+    final q = await (_db.select(_db.quests)..where((q) => q.id.equals(id))).getSingleOrNull();
+    if (q == null) return;
+    final dueAt = _dateOnly(d.dueAt);
+    final dueChanged = q.dueAt?.millisecondsSinceEpoch != dueAt?.millisecondsSinceEpoch;
+    // The server's names for what this save changes (see _enqueue).
+    final fields = <String>[
+      if (q.parentId != d.parentId) 'parent_id',
+      if (q.tier != d.tier.name) 'tier',
+      if (q.title != d.title.trim()) 'title',
+      if (q.notes != d.notes.trim()) 'notes',
+      if (q.category != d.category?.name) 'category',
+      if (q.priority != d.priority) 'priority',
+      if (dueChanged) 'due_at',
+      if (q.estimatedMinutes != d.estimatedMinutes) 'estimated_minutes',
+      if (q.recurrence != d.recurrence.name) 'recurrence',
+      if (q.intention != _blankToNull(d.intention)) 'intention',
+      if (q.shareLevel != d.shareLevel.name) 'share_level',
+      // A reminder falls on the due date, so it moves with it.
+      if (q.remindAt != d.remindAt || (dueChanged && d.remindAt != null)) 'reminder_at',
+    ];
+    if (fields.isEmpty) return;
     await (_db.update(_db.quests)..where((q) => q.id.equals(id))).write(
       QuestsCompanion(
         parentId: Value(d.parentId),
@@ -202,7 +223,7 @@ class QuestRepository {
         notes: Value(d.notes.trim()),
         category: Value(d.category?.name),
         priority: Value(d.priority),
-        dueAt: Value(_dateOnly(d.dueAt)),
+        dueAt: Value(dueAt),
         estimatedMinutes: Value(d.estimatedMinutes),
         recurrence: Value(d.recurrence.name),
         intention: Value(_blankToNull(d.intention)),
@@ -211,7 +232,7 @@ class QuestRepository {
         updatedAt: Value(_now()),
       ),
     );
-    await _enqueue('quest', id);
+    await _enqueue('quest', id, fields: fields);
   });
 
   /// Soft delete. Rewards already earned remain in the ledger.
@@ -220,10 +241,14 @@ class QuestRepository {
     await (_db.update(
       _db.quests,
     )..where((q) => q.id.equals(id))).write(QuestsCompanion(deletedAt: Value(now), updatedAt: Value(now)));
+    final children = await (_db.select(_db.quests)..where((q) => q.parentId.equals(id))).get();
     await (_db.update(
       _db.quests,
     )..where((q) => q.parentId.equals(id))).write(QuestsCompanion(parentId: const Value(null), updatedAt: Value(now)));
-    await _enqueue('quest', id);
+    await _enqueue('quest', id, fields: const ['deleted_at']);
+    for (final child in children) {
+      await _enqueue('quest', child.id, fields: const ['parent_id']);
+    }
   });
 
   Future<void> addSubtask(String questId, String title) => _db.transaction(() async {
@@ -247,7 +272,7 @@ class QuestRepository {
     await (_db.update(
       _db.subtasks,
     )..where((s) => s.id.equals(id))).write(SubtasksCompanion(done: Value(done), updatedAt: Value(_now())));
-    await _enqueue('subtask', id);
+    await _enqueue('subtask', id, fields: const ['done']);
   });
 
   Future<void> deleteSubtask(String id) => _db.transaction(() async {
@@ -255,17 +280,19 @@ class QuestRepository {
     await (_db.update(
       _db.subtasks,
     )..where((s) => s.id.equals(id))).write(SubtasksCompanion(deletedAt: Value(now), updatedAt: Value(now)));
-    await _enqueue('subtask', id);
+    await _enqueue('subtask', id, fields: const ['deleted_at']);
   });
 
-  Future<void> _enqueue(String entity, String id) => _db
+  /// Queues a change for sync. [fields] are the server's names for what it
+  /// changed; without them (a new row) the whole row goes up.
+  Future<void> _enqueue(String entity, String id, {List<String>? fields}) => _db
       .into(_db.outboxEntries)
       .insert(
         OutboxEntriesCompanion.insert(
           entity: entity,
           entityId: id,
           op: 'upsert',
-          payload: jsonEncode({'id': id}),
+          payload: jsonEncode({'id': id, 'fields': ?fields}),
           createdAt: _now(),
         ),
       );

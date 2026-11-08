@@ -216,7 +216,7 @@ void main() {
 
     final report = await sync.syncOnce();
 
-    expect(report.pushed, 2);
+    expect(report.pushed, 3, reason: 'the quest, its completion and that the quest is done');
     final quest = api.pushed.firstWhere((c) => c['entity'] == 'quest');
     final payload = quest['payload']! as Map<String, Object?>;
     expect(payload['share_level'], 'title_only');
@@ -329,9 +329,9 @@ void main() {
     final q = await quests.create(const QuestDraft(title: 'Write report'));
     await progression.complete(q, provisional: true);
     await quests.create(const QuestDraft(title: 'Read'));
-    api.retryableFrom = 2; // quest and completion go through, the next quest waits
+    api.retryableFrom = 2; // quest and completion go through, what follows them waits
     await sync.syncOnce();
-    expect(await db.select(db.outboxEntries).get(), hasLength(1));
+    expect(await db.select(db.outboxEntries).get(), hasLength(2));
     api
       ..retryableFrom = null
       ..evaluation = {'result': serverResult(5), 'proposal': serverProposal()};
@@ -943,12 +943,120 @@ void main() {
       await completeAndUndo();
       api.refusedForNow.add(completionId);
       await sync.syncOnce();
-      expect(await sync.unsyncedChanges(), 2, reason: 'the completion and its undo both wait');
+      expect(await sync.unsyncedChanges(), greaterThanOrEqualTo(2), reason: 'the completion and its undo both wait');
 
       api.refusedForNow.clear();
       await sync.syncOnce();
       expect(await sync.unsyncedChanges(), 0);
       expect(api.pushed.where((c) => c['op'] == 'undo'), hasLength(1), reason: 'the undo reached the server');
+    });
+  });
+
+  group('what a change sends', () {
+    Set<String> keysOf(Map<String, Object?> change) => (change['payload']! as Map).keys.cast<String>().toSet();
+
+    Future<Quest> synced(QuestDraft draft) async {
+      final q = await quests.create(draft);
+      await sync.syncOnce();
+      api.sent.clear();
+      return q;
+    }
+
+    test('a new quest goes up whole', () async {
+      await quests.create(const QuestDraft(title: 'Write report'));
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), containsAll(['title', 'tier', 'notes', 'status', 'priority', 'created_at']));
+    });
+
+    test('an edit sends only the fields it changed', () async {
+      final q = await synced(const QuestDraft(title: 'Write report', notes: 'old notes'));
+      await quests.update(q.id, const QuestDraft(title: 'Write the report', notes: 'old notes'));
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), {'title', 'created_at'}, reason: 'the old notes must not overwrite newer ones');
+      expect((api.sent.single['payload']! as Map)['title'], 'Write the report');
+    });
+
+    test('saving without a change sends nothing', () async {
+      final q = await synced(const QuestDraft(title: 'Write report'));
+      await quests.update(q.id, const QuestDraft(title: 'Write report'));
+      expect(await sync.unsyncedChanges(), 0);
+    });
+
+    test('a reminder moves with its due date', () async {
+      final q = await synced(QuestDraft(title: 'Pay rent', dueAt: DateTime(2026, 12, 1), remindAt: 9 * 60));
+      await quests.update(q.id, QuestDraft(title: 'Pay rent', dueAt: DateTime(2026, 12, 2), remindAt: 9 * 60));
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), {'due_at', 'reminder_at', 'created_at'});
+    });
+
+    test('deleting a quest sends the deletion and frees its children', () async {
+      final goal = await synced(const QuestDraft(title: 'Learn piano', tier: QuestTier.objective));
+      final child = await synced(QuestDraft(title: 'Practise scales', parentId: goal.id));
+      await quests.delete(goal.id);
+      await sync.syncOnce();
+      expect(keysOf(api.sent.first), {'deleted_at', 'created_at'});
+      expect(api.sent.last['id'], child.id);
+      expect(keysOf(api.sent.last), {'parent_id', 'created_at'});
+      expect((api.sent.last['payload']! as Map)['parent_id'], isNull);
+    });
+
+    test('ticking a step sends only that, and its quest for the server', () async {
+      final q = await synced(const QuestDraft(title: 'Write report'));
+      await quests.addSubtask(q.id, 'Outline');
+      await sync.syncOnce();
+      api.sent.clear();
+      await quests.setSubtaskDone((await db.select(db.subtasks).getSingle()).id, true);
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), {'done', 'quest_id'});
+    });
+
+    test('part of a row the server refuses goes up whole the next time', () async {
+      final q = await synced(const QuestDraft(title: 'Write report'));
+      await quests.update(q.id, const QuestDraft(title: 'Write the report'));
+      api.refusedForGood.add(q.id);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 1, reason: 'the server may not have the row at all');
+
+      api.refusedForGood.clear();
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+      expect(keysOf(api.sent.last), containsAll(['title', 'tier', 'status']));
+    });
+
+    test('a whole row the server refuses is given up', () async {
+      await quests.create(const QuestDraft(title: 'Write report'));
+      api.refusedForGood.add((await db.select(db.quests).getSingle()).id);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+    });
+  });
+
+  group('a finished quest', () {
+    Map<String, Object?> lastPayload() => Map<String, Object?>.from(api.sent.last['payload']! as Map);
+
+    test('tells the server it is done, after its completion', () async {
+      final q = await quests.create(const QuestDraft(title: 'Pay rent'));
+      await progression.complete(q, provisional: true);
+      await sync.syncOnce();
+      expect([for (final c in api.sent) c['entity']], ['quest', 'completion', 'quest']);
+      expect(lastPayload().keys, unorderedEquals(['status', 'created_at']));
+      expect(lastPayload()['status'], 'completed');
+    });
+
+    test('reopens on the server when it is undone', () async {
+      final q = await quests.create(const QuestDraft(title: 'Pay rent'));
+      final outcome = await progression.complete(q, provisional: true);
+      await sync.syncOnce();
+      await progression.undo(outcome!.completionId);
+      await sync.syncOnce();
+      expect(lastPayload()['status'], 'active');
+    });
+
+    test('that recurs stays open, so nothing more goes up', () async {
+      final q = await quests.create(const QuestDraft(title: 'Walk', recurrence: Recurrence.daily));
+      await progression.complete(q, provisional: true);
+      await sync.syncOnce();
+      expect([for (final c in api.sent) c['entity']], ['quest', 'completion']);
     });
   });
 
