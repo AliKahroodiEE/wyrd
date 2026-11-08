@@ -137,6 +137,14 @@ class FakeDeviceLog implements PushDeviceLog {
   @override
   Future<bool> retirePending() async => retire;
 
+  bool holds = false;
+
+  @override
+  Future<bool> holdsToken() async => holds;
+
+  @override
+  Future<void> setHoldsToken(bool value) async => holds = value;
+
   @override
   Future<void> setRetirePending(bool pending) async => retire = pending;
 }
@@ -400,6 +408,29 @@ void main() {
       expect(registry.unregistered, ['token-1']);
       expect(messaging.deletions, 1);
       expect(push.status.value, PushStatus.hidden);
+    });
+
+    test('signing out invalidates a token left from before notifications were turned off', () async {
+      await registered();
+      expect(deviceLog.holds, isTrue);
+      messaging.current = PushPermission.blocked;
+      relaunch().setUser('u1'); // This session never reaches the token.
+      await settle();
+      unawaited(push.beforeSignOut());
+      push.setUser(null);
+      await settle();
+      expect(messaging.deletions, 1, reason: 'the token stays valid without the permission');
+      expect(deviceLog.holds, isFalse);
+    });
+
+    test('a device that never registered a token is left alone at sign-out', () async {
+      messaging.current = PushPermission.blocked;
+      create().setUser('u1');
+      await settle();
+      unawaited(push.beforeSignOut());
+      push.setUser(null);
+      await settle();
+      expect(messaging.deletions, 0);
     });
 
     test('signing out invalidates the token; the session is gone, so no server call', () async {

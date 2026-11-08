@@ -150,6 +150,12 @@ abstract interface class PushDeviceLog {
   /// does, the token keeps receiving that account's pushes.
   Future<bool> retirePending();
   Future<void> setRetirePending(bool pending);
+
+  /// Whether this device registered a token that has not been invalidated
+  /// since. It stays valid even with notifications turned off, so sign-out
+  /// has to retire it then too.
+  Future<bool> holdsToken();
+  Future<void> setHoldsToken(bool holds);
 }
 
 /// Keeps this device's push registration in step with the signed-in account,
@@ -411,6 +417,7 @@ class PushService {
     final registered = _registered;
     if (registered == null || registered.userId != userId || registered.token != token) {
       await registry.register(token, platform);
+      await _setHoldsToken(true);
       if (!_isCurrent(step)) return;
       _registered = (userId: userId, token: token);
     }
@@ -428,10 +435,11 @@ class PushService {
     _registered = null;
     // A token from an earlier session may still be on the server, so retire
     // it whenever this device could have one.
-    if (registered == null && !pending) {
+    if (registered == null && !pending && !await _holdsToken()) {
       final permission = await messaging.permission();
       if (!_isCurrent(step) || permission != PushPermission.granted) return;
     }
+    if (!_isCurrent(step)) return;
     // Noted first, so that whatever stops the invalidation (FCM out of reach,
     // the app closed while the server is slow) the next launch or return to
     // the app tries again: until then the token keeps receiving the pushes.
@@ -456,6 +464,7 @@ class PushService {
       debugPrint('Push token never existed on this device: $error');
     }
     await _setRetirePending(false);
+    await _setHoldsToken(false);
     if (_isCurrent(step)) {
       _retired = true;
     } else {
@@ -480,6 +489,25 @@ class PushService {
   Future<void> _setRetirePending(bool pending) async {
     try {
       await _log.setRetirePending(pending);
+    } on Object catch (error) {
+      debugPrint('Push device log could not be written: $error');
+    }
+  }
+
+  /// [PushDeviceLog.holdsToken], or false when the log cannot be read.
+  Future<bool> _holdsToken() async {
+    try {
+      return await _log.holdsToken();
+    } on Object catch (error) {
+      debugPrint('Push device log could not be read: $error');
+      return false;
+    }
+  }
+
+  /// Notes [PushDeviceLog.setHoldsToken], at best effort.
+  Future<void> _setHoldsToken(bool holds) async {
+    try {
+      await _log.setHoldsToken(holds);
     } on Object catch (error) {
       debugPrint('Push device log could not be written: $error');
     }

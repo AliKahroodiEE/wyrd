@@ -154,6 +154,7 @@ class PrefsPushDeviceLog implements PushDeviceLog {
 
   static String _askedKey(String userId) => 'push.asked.$userId';
   static const _retireKey = 'push.retirePending';
+  static const _holdsKey = 'push.holdsToken';
 
   @override
   Future<bool> wasAsked(String userId) async => await _prefs.getBool(_askedKey(userId)) ?? false;
@@ -166,4 +167,10 @@ class PrefsPushDeviceLog implements PushDeviceLog {
 
   @override
   Future<void> setRetirePending(bool pending) => pending ? _prefs.setBool(_retireKey, true) : _prefs.remove(_retireKey);
+
+  @override
+  Future<bool> holdsToken() async => await _prefs.getBool(_holdsKey) ?? false;
+
+  @override
+  Future<void> setHoldsToken(bool holds) => holds ? _prefs.setBool(_holdsKey, true) : _prefs.remove(_holdsKey);
 }
