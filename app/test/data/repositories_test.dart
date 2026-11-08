@@ -89,6 +89,24 @@ void main() {
     expect(second.result.hasAdjustment(AdjustmentCode.repetition), isTrue);
   });
 
+  test('an evaluation that arrives after an undo leaves it undone', () async {
+    final q = await quests.create(const QuestDraft(title: 'Write report 45m'));
+    final outcome = await progression.complete(q, provisional: true);
+    expect(await progression.undo(outcome!.completionId), isTrue);
+    final undone = await progression.attributeTotals();
+    const server = RewardResult(
+      grants: [Grant(Attribute.discipline, 7, 7)],
+      effectiveMinutes: 45,
+      trivial: false,
+      similarityKey: 'work.report',
+      adjustments: [],
+      ruleVersion: rulesVersion,
+      source: ProposalSource.ai,
+    );
+    await progression.reconcile(outcome.completionId, outcome.proposal, server);
+    expect(await progression.attributeTotals(), undone, reason: 'the XP stays taken back');
+  });
+
   test('server reconciliation supersedes provisional rows', () async {
     final q = await quests.create(const QuestDraft(title: 'Write report 45m'));
     final outcome = await progression.complete(q, provisional: true);
