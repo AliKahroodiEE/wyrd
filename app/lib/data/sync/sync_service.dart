@@ -217,12 +217,18 @@ class SyncService {
           final o = rows[i];
           final r = i < results.length ? results[i] : const <String, Object?>{};
           final status = r['status'];
+          // An undo the server cannot place, of a completion no longer
+          // waiting to go up (refused for good), can never succeed.
+          final orphanedUndo =
+              c['op'] == 'undo' &&
+              r['reason'] == 'missing_reference' &&
+              await _pendingAttempts('completion', o.entityId) == null;
           if (status == 'applied' || status == 'ignored') {
             pushed++;
             await (_db.delete(_db.outboxEntries)..where((x) => x.id.equals(o.id))).go();
             await _settleDropped(o, taken: status == 'applied');
             if (c['entity'] == 'completion' && c['op'] == 'insert') completionIds.add(c['id']! as String);
-          } else if (r['retryable'] == true || status == null) {
+          } else if (!orphanedUndo && (r['retryable'] == true || status == null)) {
             await (_db.update(
               _db.outboxEntries,
             )..where((x) => x.id.equals(o.id))).write(OutboxEntriesCompanion(attempts: Value(o.attempts + 1)));

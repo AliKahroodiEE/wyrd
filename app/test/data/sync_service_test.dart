@@ -27,11 +27,21 @@ class FakeApi implements RemoteApi {
   /// Ids the server keeps its own, newer version of ('ignored').
   final ignored = <String>{};
 
-  /// Ids the server refuses for now, every time ('retryable').
+  /// Ids the server refuses for now, every time ('retryable'). Undos are
+  /// answered as below.
   final refusedForNow = <String>{};
 
-  /// Ids the server refuses for good ('invalid', not retryable).
+  /// Ids the server refuses for good ('invalid', not retryable). Undos are
+  /// answered as below.
   final refusedForGood = <String>{};
+
+  /// Completions the server has: each one it takes adds its id. Like
+  /// undo_completion_internal, it answers an undo of any other completion
+  /// 'missing_reference', retryable; [ignored] means it was already undone.
+  final completions = <String>{};
+
+  /// Every change sent, whatever the answer.
+  final sent = <Map<String, Object?>>[];
   var evaluateCalls = 0;
   var pushCalls = 0;
   var pullCalls = 0;
@@ -46,27 +56,33 @@ class FakeApi implements RemoteApi {
   @override
   Future<List<Map<String, Object?>>> push(List<Map<String, Object?>> changes) async {
     pushCalls++;
+    sent.addAll(changes);
     if (failRetryable) {
       return [
         for (final c in changes) {'id': c['id'], 'status': 'rejected', 'retryable': true},
       ];
     }
     final from = retryableFrom ?? changes.length;
-    bool refused(int i) => i >= from || refusedForNow.contains(changes[i]['id']);
-    bool invalid(int i) => refusedForGood.contains(changes[i]['id']);
-    pushed.addAll([
-      for (var i = 0; i < changes.length; i++)
-        if (!refused(i) && !invalid(i)) changes[i],
-    ]);
-    return [
-      for (var i = 0; i < changes.length; i++)
-        if (refused(i))
-          {'id': changes[i]['id'], 'status': 'rejected', 'retryable': true}
-        else if (invalid(i))
-          {'id': changes[i]['id'], 'status': 'rejected', 'reason': 'invalid'}
-        else
-          {'id': changes[i]['id'], 'status': ignored.contains(changes[i]['id']) ? 'ignored' : 'applied'},
-    ];
+    return [for (var i = 0; i < changes.length; i++) _answer(changes[i], waits: i >= from)];
+  }
+
+  /// One change, in order: what the server takes counts for the changes
+  /// after it in the same batch.
+  Map<String, Object?> _answer(Map<String, Object?> change, {required bool waits}) {
+    final id = change['id'];
+    final undo = change['entity'] == 'completion' && change['op'] == 'undo';
+    Map<String, Object?> refused(String reason, {bool retryable = false}) => {
+      'id': id,
+      'status': 'rejected',
+      'reason': reason,
+      if (retryable) 'retryable': true,
+    };
+    if (waits || (!undo && refusedForNow.contains(id))) return refused('missing_reference', retryable: true);
+    if (!undo && refusedForGood.contains(id)) return refused('invalid');
+    if (undo && !completions.contains(id)) return refused('missing_reference', retryable: true);
+    pushed.add(change);
+    if (change['entity'] == 'completion' && change['op'] == 'insert') completions.add(id! as String);
+    return {'id': id, 'status': ignored.contains(id) ? 'ignored' : 'applied'};
   }
 
   /// Like the server: only what changed after [cursor].
@@ -888,6 +904,52 @@ void main() {
     final watch = Stopwatch()..start();
     await control.stop();
     expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+  });
+
+  group('an undo of a completion the server never took', () {
+    late String completionId;
+
+    Future<void> completeAndUndo() async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      completionId = (await progression.complete(q, provisional: true))!.completionId;
+      expect(await progression.undo(completionId), isTrue);
+    }
+
+    test('goes with its completion when the server refuses that for good', () async {
+      await completeAndUndo();
+      api.refusedForGood.add(completionId);
+      await sync.syncOnce(); // one batch: the completion, then its undo
+
+      expect(api.sent.where((c) => c['op'] == 'undo'), hasLength(1));
+      expect(await sync.unsyncedChanges(), 0, reason: 'an undo that can never succeed is not unsynced work');
+      final sent = api.sent.length;
+      await sync.syncOnce();
+      expect(api.sent.length, sent, reason: 'nothing is left to send');
+    });
+
+    test('goes too when it is made after the refusal', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      completionId = (await progression.complete(q, provisional: true))!.completionId;
+      api.refusedForGood.add(completionId);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+
+      expect(await progression.undo(completionId), isTrue);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+    });
+
+    test('keeps waiting while its completion still waits to go up', () async {
+      await completeAndUndo();
+      api.refusedForNow.add(completionId);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 2, reason: 'the completion and its undo both wait');
+
+      api.refusedForNow.clear();
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.pushed.where((c) => c['op'] == 'undo'), hasLength(1), reason: 'the undo reached the server');
+    });
   });
 
   group('account settings', () {
