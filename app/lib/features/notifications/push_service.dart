@@ -77,7 +77,8 @@ class PushPreferences {
 /// The push transport: Firebase Cloud Messaging in the app, a fake in tests.
 ///
 /// Nothing here starts Firebase until it is first used, so [PushService]
-/// touches it only once someone is signed in.
+/// touches it only once someone is signed in, or to invalidate a token an
+/// account left on the device ([PushDeviceLog.retirePending]).
 abstract interface class PushMessaging {
   /// Whether this device or browser can receive push at all.
   Future<bool> isSupported();
@@ -94,7 +95,8 @@ abstract interface class PushMessaging {
   /// tells whether it ever will.
   Future<String?> token();
 
-  /// Invalidates the token, so nothing sent to it arrives any more.
+  /// Invalidates the token, so nothing sent to it arrives any more. Throws
+  /// when FCM cannot be reached to do so, as offline.
   Future<void> deleteToken();
 
   /// Tokens issued after the first one.
@@ -107,9 +109,9 @@ abstract interface class PushMessaging {
   Stream<PushMessage> get openedMessages;
 }
 
-/// Whether [error], thrown by [PushMessaging.token], means this device or
-/// browser can never get a token, rather than not right now. Only these are
-/// known to last:
+/// Whether [error], thrown by [PushMessaging.token] or
+/// [PushMessaging.deleteToken], means this device or browser can never get a
+/// token, rather than not right now. Only these are known to last:
 /// - an Android phone without Google Play services: FCM's
 ///   `MISSING_INSTANCEID_SERVICE`, which firebase_messaging reports as
 ///   `[firebase_messaging/unknown] java.io.IOException: MISSING_INSTANCEID_SERVICE`;
@@ -135,11 +137,19 @@ abstract interface class PushRegistry {
   Future<void> unregister(String token);
 }
 
-/// Remembers which accounts were already asked on this device, so the first
-/// Settings visit prompts once and never again.
-abstract interface class PushPromptLog {
+/// What push keeps on this device across restarts.
+abstract interface class PushDeviceLog {
+  /// Whether [userId] was already asked on this device, so the first Settings
+  /// visit prompts once and never again.
   Future<bool> wasAsked(String userId);
   Future<void> markAsked(String userId);
+
+  /// Whether this device's token still has to be invalidated: an account
+  /// signed out here or turned push off, and the invalidation has not gone
+  /// through yet (FCM out of reach, say, or the app closed first). Until it
+  /// does, the token keeps receiving that account's pushes.
+  Future<bool> retirePending();
+  Future<void> setRetirePending(bool pending);
 }
 
 /// Keeps this device's push registration in step with the signed-in account,
@@ -148,18 +158,22 @@ abstract interface class PushPromptLog {
 /// It never prompts by itself at launch. [settingsOpened] asks once per
 /// account where the platform allows a prompt outside a tap, and [enable]
 /// asks when the user turns a switch on or taps Allow.
+///
+/// A token it could not invalidate, signing out offline say, is noted in the
+/// [PushDeviceLog] and tried again at every launch and every return to the
+/// app while nobody here wants push, until the invalidation goes through.
 class PushService {
   PushService({
     required this._messaging,
     required this._registry,
-    required this._prompts,
+    required this._log,
     required this._platform,
     this.promptOnSettingsOpen = false,
   });
 
   final PushMessaging? _messaging;
   final PushRegistry? _registry;
-  final PushPromptLog _prompts;
+  final PushDeviceLog _log;
   final String? _platform;
 
   /// Whether the first Settings visit after signing in may show the system
@@ -173,6 +187,11 @@ class PushService {
   final _subscriptions = <StreamSubscription<Object?>>[];
 
   String? _userId;
+
+  /// Whether [setUser] has said who is signed in. Until it has, a device
+  /// that seems signed out may be one whose session is still loading, so
+  /// nothing is retried on it.
+  bool _userKnown = false;
   PushPreferences? _preferences;
   bool? _supported;
   ({String userId, String token})? _registered;
@@ -203,13 +222,23 @@ class PushService {
   @visibleForTesting
   Future<void> get settled => _queue;
 
-  /// The signed-in account, or null for guests and after signing out.
+  /// The signed-in account, or null for guests and after signing out. Call
+  /// it once the session is known, not while it loads: the first call counts
+  /// too, so a launch signed out retries a token left to invalidate.
   void setUser(String? userId) {
-    if (userId == _userId) return;
+    if (_userKnown && userId == _userId) return;
     final signedOut = _userId != null && userId == null;
+    _userKnown = true;
     _userId = userId;
     if (userId != null) _listen();
     unawaited(_sync(signedOut: signedOut));
+  }
+
+  /// The app is back in the foreground, where the network may be back too:
+  /// a token left to invalidate is tried again while nobody here wants push.
+  void resumed() {
+    final pushWanted = _userId != null && _preferences?.any != false;
+    if (_userKnown && !pushWanted) unawaited(_sync());
   }
 
   /// The Settings switches; null while the profile is still loading.
@@ -227,8 +256,8 @@ class PushService {
     final messaging = _messaging;
     final userId = _userId;
     if (!promptOnSettingsOpen || messaging == null || userId == null || status.value != PushStatus.off) return;
-    if (await _prompts.wasAsked(userId)) return;
-    await _prompts.markAsked(userId);
+    if (await _log.wasAsked(userId)) return;
+    await _log.markAsked(userId);
     await _ask(messaging);
     await _sync();
   }
@@ -243,7 +272,7 @@ class PushService {
     // Nothing to ask for where push cannot work (an iPhone browser tab).
     if (_supported != false) {
       await _ask(messaging);
-      await _prompts.markAsked(userId);
+      await _log.markAsked(userId);
     }
     await _sync();
   }
@@ -251,7 +280,8 @@ class PushService {
   /// Removes this device's token from the server while the session still
   /// works; the sign-out flow can call it just before signing out. Without
   /// it the token is still invalidated when the sign-out arrives, and the
-  /// notify function drops the dead row the next time it sends.
+  /// notify function drops the dead row the next time it sends. Offline,
+  /// the invalidation is tried again later ([PushDeviceLog.retirePending]).
   Future<void> beforeSignOut() => _run((step) => _retire(step, server: true));
 
   void dispose() {
@@ -283,7 +313,14 @@ class PushService {
   }
 
   Future<void> _sync({bool signedOut = false}) => _run((step) async {
-    if (signedOut) await _retire(step, server: false);
+    if (signedOut) {
+      await _retire(step, server: false);
+    } else if (_userKnown && _userId == null && await _retirePending()) {
+      // Signed out, and the token could not be invalidated before: try
+      // again. Nothing else touches Firebase while signed out, so a device
+      // that never had push never starts it.
+      await _retire(step, server: false, pending: true);
+    }
     await _reconcile(step);
   });
 
@@ -330,7 +367,11 @@ class PushService {
     if (!_isCurrent(step)) return;
     _supported = supported;
     if (!preferences.any) {
-      if (_registered != null) await _retire(step, server: true);
+      // A token still waiting to be invalidated goes too, such as the one an
+      // account signed out offline left to whoever signs in next.
+      final pending = _registered == null && await _retirePending();
+      if (!_isCurrent(step)) return;
+      if (_registered != null || pending) await _retire(step, server: true, pending: pending);
       if (!_isCurrent(step)) return;
       _show(PushStatus.hidden);
       return;
@@ -378,11 +419,24 @@ class PushService {
 
   /// Stops pushes to this device for the account last registered on it.
   /// [server] also deletes the server row, which needs a live session.
-  Future<void> _retire(int step, {required bool server}) async {
+  /// [pending]: a token is known to be left to invalidate
+  /// ([PushDeviceLog.retirePending]), so this device has one to retire.
+  Future<void> _retire(int step, {required bool server, bool pending = false}) async {
     final messaging = _messaging;
     if (messaging == null || _retired || !_isCurrent(step)) return;
     final registered = _registered;
     _registered = null;
+    // A token from an earlier session may still be on the server, so retire
+    // it whenever this device could have one.
+    if (registered == null && !pending) {
+      final permission = await messaging.permission();
+      if (!_isCurrent(step) || permission != PushPermission.granted) return;
+    }
+    // Noted first, so that whatever stops the invalidation (FCM out of reach,
+    // the app closed while the server is slow) the next launch or return to
+    // the app tries again: until then the token keeps receiving the pushes.
+    await _setRetirePending(true);
+    if (!_isCurrent(step)) return;
     if (server && registered != null) {
       try {
         await _registry?.unregister(registered.token);
@@ -391,24 +445,43 @@ class PushService {
       }
       if (!_isCurrent(step)) return;
     }
-    // A token from an earlier session may still be on the server, so retire
-    // it whenever this device could have one.
-    if (registered == null) {
-      final permission = await messaging.permission();
-      if (!_isCurrent(step) || permission != PushPermission.granted) return;
-    }
     try {
       await messaging.deleteToken();
-      if (_isCurrent(step)) {
-        _retired = true;
-      } else {
-        // Finished late: a newer step may have registered the very token this
-        // just invalidated (FCM hands out its cached token until the delete
-        // completes), so the current account fetches and registers a new one.
-        unawaited(_sync());
-      }
     } on Object catch (error) {
-      debugPrint('Push token could not be invalidated: $error');
+      if (!isPermanentTokenError(error)) {
+        debugPrint('Push token could not be invalidated, to be tried again: $error');
+        return;
+      }
+      // This device can never get a token, so none is left to invalidate.
+      debugPrint('Push token never existed on this device: $error');
+    }
+    await _setRetirePending(false);
+    if (_isCurrent(step)) {
+      _retired = true;
+    } else {
+      // Finished late: a newer step may have registered the very token this
+      // just invalidated (FCM hands out its cached token until the delete
+      // completes), so the current account fetches and registers a new one.
+      unawaited(_sync());
+    }
+  }
+
+  /// [PushDeviceLog.retirePending], or false when the log cannot be read.
+  Future<bool> _retirePending() async {
+    try {
+      return await _log.retirePending();
+    } on Object catch (error) {
+      debugPrint('Push device log could not be read: $error');
+      return false;
+    }
+  }
+
+  /// A log that cannot be written never keeps the token from being invalidated.
+  Future<void> _setRetirePending(bool pending) async {
+    try {
+      await _log.setRetirePending(pending);
+    } on Object catch (error) {
+      debugPrint('Push device log could not be written: $error');
     }
   }
 
