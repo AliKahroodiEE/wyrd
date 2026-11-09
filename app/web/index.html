@@ -12,10 +12,14 @@
   <meta name="theme-color" content="#F4EDE1" media="(prefers-color-scheme: light)">
   <meta name="color-scheme" content="dark light">
 
+  <!-- Home Screen web app (iOS 16.4+ can then receive push). Status bar style
+       "default" keeps the page below the status bar: Flutter web does not apply
+       the safe-area insets that "black-translucent" would require. -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Wyrd">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/Icon-180.png">
   <link rel="icon" type="image/png" href="favicon.png"/>
 
   <title>Wyrd</title>

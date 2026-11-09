@@ -79,6 +79,12 @@ class AppLocalizationsFa extends AppLocalizations {
   String get errorGeneric => 'مشکلی از سمت ما پیش آمد. داده‌هایت در امان است.';
 
   @override
+  String get actionRateLimited => 'تغییرها پشت سر هم زیاد بود. یک دقیقه صبر کن و دوباره امتحان کن.';
+
+  @override
+  String get commentRateLimited => 'در یک ساعت گذشته در این انجمن زیاد نظر گذاشتی. کمی بعد دوباره امتحان کن.';
+
+  @override
   String get loadingLabel => 'در حال بارگذاری';
 
   @override
@@ -346,6 +352,11 @@ class AppLocalizationsFa extends AppLocalizations {
   String get fieldTitleRequired => 'برای مأموریت نامی بنویس.';
 
   @override
+  String fieldTooLong(String max) {
+    return 'خیلی طولانی است؛ حداکثر $max کاراکتر بنویس.';
+  }
+
+  @override
   String get fieldNotes => 'یادداشت';
 
   @override
@@ -398,6 +409,11 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get fieldEstimate => 'زمان تخمینی (دقیقه)';
+
+  @override
+  String fieldEstimateInvalid(String min, String max) {
+    return 'یک عدد صحیح از $min تا $max دقیقه بنویس.';
+  }
 
   @override
   String get fieldIntention => 'کی و کجا انجامش می‌دهی؟';
@@ -547,6 +563,11 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get completeSheetMinutesHelp => 'اختیاری. عددهای صادقانه، شخصیتت را صادق نگه می‌دارند.';
+
+  @override
+  String completeSheetMinutesInvalid(String max) {
+    return 'یک عدد صحیح تا سقف $max دقیقه بنویس.';
+  }
 
   @override
   String get completeSheetConfirm => 'مُهر کن';
@@ -1351,6 +1372,43 @@ class AppLocalizationsFa extends AppLocalizations {
   String get notifWeekly => 'وقایع‌نامه‌ی هفتگی';
 
   @override
+  String get pushDevice => 'اعلان‌ها روی این دستگاه';
+
+  @override
+  String get pushDeviceOn => 'روشن است. اعلان‌ها حتی وقتی سرنوشت‌ساز بسته است به دستت می‌رسند.';
+
+  @override
+  String get pushDeviceOff => 'خاموش است. اجازه بده تا وقتی سرنوشت‌ساز بسته است هم خبرها به دستت برسند.';
+
+  @override
+  String get pushDeviceBlocked => 'مسدود است. در تنظیمات مرورگر یا دستگاهت به سرنوشت‌ساز اجازه‌ی اعلان بده.';
+
+  @override
+  String get pushAllow => 'اجازه بده';
+
+  @override
+  String get pushUnsupported => 'این مرورگر نمی‌تواند اعلان دریافت کند.';
+
+  @override
+  String get pushUnsupportedDevice => 'این دستگاه نمی‌تواند اعلان دریافت کند.';
+
+  @override
+  String get pushInstallHint =>
+      'روی آیفون، سرنوشت‌ساز را به صفحه‌ی اصلی اضافه کن (Share و بعد Add to Home Screen) و از همان‌جا بازش کن تا اعلان‌ها به دستت برسد.';
+
+  @override
+  String get pushInAppFallback => 'خبر تازه‌ای منتظرت است.';
+
+  @override
+  String get pushOpen => 'باز کن';
+
+  @override
+  String get pushChannelName => 'انجمن و وقایع‌نامه';
+
+  @override
+  String get pushChannelDescription => 'واکنش‌ها، نظرها و وقایع‌نامه‌ی هفتگی‌ات.';
+
+  @override
   String get quietHours => 'ساعات سکوت';
 
   @override
@@ -1363,6 +1421,13 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get sectionAppearance => 'ظاهر';
+
+  @override
+  String get installHintTitle => 'برنامه را به صفحه‌ی اصلی اضافه کن';
+
+  @override
+  String get installHintBody =>
+      'دکمه‌ی Share را بزن (شاید زیر ••• باشد) و بعد «Add to Home Screen» را انتخاب کن. وقتی از صفحه‌ی اصلی بازش کنی، برنامه تمام‌صفحه اجرا می‌شود و می‌تواند برایت اعلان بفرستد.';
 
   @override
   String get reducedMotion => 'کاهش حرکت';
@@ -1411,6 +1476,138 @@ class AppLocalizationsFa extends AppLocalizations {
   String get signOut => 'خروج';
 
   @override
+  String get authHeadline => 'افسانه‌ات را امن نگه دار';
+
+  @override
+  String get authIntro =>
+      'وارد شو تا شخصیتت روی همه‌ی دستگاه‌هایت همگام شود و بتوانی به انجمن‌ها بپیوندی. هر چه به عنوان مهمان ساخته‌ای، همراهت می‌آید.';
+
+  @override
+  String get authContinueEmail => 'ادامه با ایمیل';
+
+  @override
+  String get authContinueGoogle => 'ادامه با گوگل';
+
+  @override
+  String get authContinueGithub => 'ادامه با گیت‌هاب';
+
+  @override
+  String get authOr => 'یا';
+
+  @override
+  String get authUsePassword => 'به جایش با گذرواژه وارد شو';
+
+  @override
+  String get authUseCode => 'به جایش برایم کد بفرست';
+
+  @override
+  String get authCodeTitle => 'ایمیلت را ببین';
+
+  @override
+  String authCodeSent(String email) {
+    return 'یک کد ۶ رقمی به $email فرستادیم. تا یک ساعت اعتبار دارد.';
+  }
+
+  @override
+  String get authCodeLabel => 'کد ۶ رقمی';
+
+  @override
+  String get authPasteCode => 'چسباندن کد';
+
+  @override
+  String get authVerify => 'تأیید';
+
+  @override
+  String get authResend => 'فرستادن کد تازه';
+
+  @override
+  String authResendIn(String seconds) {
+    return 'کد تازه تا $seconds ثانیه‌ی دیگر';
+  }
+
+  @override
+  String get authCodeResent => 'کد تازه در راه است.';
+
+  @override
+  String get authChangeEmail => 'ایمیل دیگری وارد کن';
+
+  @override
+  String get authForgotPassword => 'گذرواژه‌ات را فراموش کرده‌ای؟';
+
+  @override
+  String get authResetTitle => 'بازنشانی گذرواژه';
+
+  @override
+  String get authResetBody => 'ایمیلت را وارد کن تا یک کد ۶ رقمی برای گذاشتن گذرواژه‌ی تازه برایت بفرستیم.';
+
+  @override
+  String get authSendCode => 'فرستادن کد';
+
+  @override
+  String get authNewPasswordTitle => 'گذرواژه‌ی تازه‌ات را انتخاب کن';
+
+  @override
+  String get authNewPassword => 'گذرواژه‌ی تازه';
+
+  @override
+  String get authSavePassword => 'ذخیره‌ی گذرواژه';
+
+  @override
+  String get authPasswordSaved => 'گذرواژه ذخیره شد. وارد شده‌ای.';
+
+  @override
+  String get authPasswordRules => 'دست‌کم ۸ کاراکتر، با حروف و اعداد انگلیسی.';
+
+  @override
+  String get authShowPassword => 'نمایش گذرواژه';
+
+  @override
+  String get authHidePassword => 'پنهان کردن گذرواژه';
+
+  @override
+  String get authErrEmail => 'یک نشانی ایمیل درست وارد کن.';
+
+  @override
+  String get authErrCodeLength => 'هر ۶ رقم را وارد کن.';
+
+  @override
+  String get authErrCode => 'این کد اشتباه است یا منقضی شده. دوباره نگاهش کن یا کد تازه بخواه.';
+
+  @override
+  String get authErrNotConfirmed => 'اول ایمیلت را تأیید کن. یک کد تازه برایت فرستادیم.';
+
+  @override
+  String get authErrRateLimit => 'تلاش‌ها زیاد شد. یک دقیقه صبر کن و دوباره امتحان کن.';
+
+  @override
+  String get authErrWeakPassword => 'گذرواژه‌ی محکم‌تری انتخاب کن: دست‌کم ۸ کاراکتر، با حروف و اعداد انگلیسی.';
+
+  @override
+  String get authErrSamePassword => 'این همان گذرواژه‌ی فعلی‌ات است. یکی تازه انتخاب کن.';
+
+  @override
+  String get authErrAccountExists => 'با این ایمیل از قبل حسابی ساخته شده. به جایش وارد شو.';
+
+  @override
+  String get authErrProvider => 'این روش ورود الان در دسترس نیست.';
+
+  @override
+  String get authErrNetwork => 'به سرور دسترسی نداریم. اتصالت را بررسی کن و دوباره امتحان کن.';
+
+  @override
+  String get authErrCancelled => 'ورود لغو شد.';
+
+  @override
+  String get deleteAccount => 'حذف حساب';
+
+  @override
+  String get deleteAccountBody =>
+      'این کار حسابت و هر چه برایش نگه داشته‌ایم را برای همیشه پاک می‌کند، بعد از حساب خارج می‌شوی و این دستگاه هم پاک می‌شود. نظرهایت در انجمن‌ها با نام «عضو پیشین» می‌مانند. این کار برگشت‌پذیر نیست.';
+
+  @override
+  String get accountDeleted => 'حسابت حذف شد.';
+
+  @override
   String get createAccount => 'ساخت حساب';
 
   @override
@@ -1423,14 +1620,56 @@ class AppLocalizationsFa extends AppLocalizations {
   String get deleteAllData => 'حذف همه‌ی داده‌ها';
 
   @override
-  String get deleteAllDataBody =>
-      'این کار شخصیت، مأموریت‌ها و تاریخچه‌ات را برای همیشه از این دستگاه و اگر وارد شده باشی، از سرورهای ما پاک می‌کند.';
+  String get deleteAllDataBody => 'این کار شخصیت، مأموریت‌ها و تاریخچه‌ات را برای همیشه از این دستگاه پاک می‌کند.';
+
+  @override
+  String get signOutClearDevice => 'خروج و پاک‌کردن این دستگاه';
+
+  @override
+  String get signOutClearDeviceBody =>
+      'از حسابت خارج می‌شوی و این دستگاه شخصیت، مأموریت‌ها و تاریخچه‌ات را فراموش می‌کند. هرچه همگام شده در حسابت می‌ماند؛ تغییرهایی که هنوز همگام نشده‌اند از بین می‌روند.';
+
+  @override
+  String get deviceCleared => 'خارج شدی. دیگر داده‌ای از تو روی این دستگاه نیست.';
+
+  @override
+  String get handoverTitle => 'تغییرهای ذخیره‌نشده‌ی یک حساب دیگر';
+
+  @override
+  String handoverBody(String email, String changes) {
+    return '$email روی این دستگاه $changes دارد که هنوز در آن حساب ذخیره نشده است. اگر ادامه دهی، از این دستگاه پاک می‌شوند. برای نگه‌داشتنشان، الان خارج شو، با $email وارد شو و بگذار همگام شوند.';
+  }
+
+  @override
+  String handoverBodyNoEmail(String changes) {
+    return 'حساب دیگری روی این دستگاه $changes دارد که هنوز در آن ذخیره نشده است. اگر ادامه دهی، از این دستگاه پاک می‌شوند. برای نگه‌داشتنشان، الان خارج شو، با همان حساب وارد شو و بگذار همگام شوند.';
+  }
+
+  @override
+  String get handoverOneChange => 'یک تغییر';
+
+  @override
+  String handoverChanges(String count) {
+    return '$count تغییر';
+  }
+
+  @override
+  String get handoverKeep => 'نگه‌شان دار و خارج شو';
+
+  @override
+  String get handoverRemove => 'پاکشان کن و ادامه بده';
 
   @override
   String get dataDeleted => 'همه‌ی داده‌ها حذف شد.';
 
   @override
   String get aboutLicense => 'کد منبع با مجوز PolyForm Strict 1.0.0 در دسترس است.';
+
+  @override
+  String get legalPrivacy => 'حریم خصوصی';
+
+  @override
+  String get legalTerms => 'شرایط استفاده';
 
   @override
   String get authTitle => 'حساب تو';
@@ -1440,12 +1679,6 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get authPassword => 'گذرواژه';
-
-  @override
-  String get authMagicLink => 'پیوند ورود را برایم ایمیل کن';
-
-  @override
-  String get authMagicLinkSent => 'پیوند ورود را در صندوق ایمیلت ببین.';
 
   @override
   String get authInvalid => 'ایمیل و گذرواژه با هم جور نیستند.';

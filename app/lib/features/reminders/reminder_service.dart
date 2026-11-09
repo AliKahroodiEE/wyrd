@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart' show Color;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
@@ -27,6 +28,8 @@ const _details = NotificationDetails(
     channelDescription: 'Reminders for quests at the times you choose.',
     importance: Importance.defaultImportance,
     priority: Priority.defaultPriority,
+    // AppColors.crimson, as for pushes (res/values/colors.xml).
+    color: Color(0xFFC0202D),
   ),
   iOS: DarwinNotificationDetails(),
 );
@@ -47,7 +50,8 @@ class _OsScheduler implements ReminderScheduler {
     }
     await _plugin.initialize(
       settings: const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+        // The white status-bar mark; Android draws small icons from alpha only.
+        android: AndroidInitializationSettings('@drawable/ic_stat_wyrd'),
         iOS: DarwinInitializationSettings(
           requestAlertPermission: false,
           requestBadgePermission: false,

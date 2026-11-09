@@ -79,6 +79,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get errorGeneric => 'Something went wrong on our side. Your data is safe.';
 
   @override
+  String get actionRateLimited => 'Too many changes in a row. Wait a minute, then try again.';
+
+  @override
+  String get commentRateLimited => 'You\'ve posted a lot in this guild in the last hour. Try again later.';
+
+  @override
   String get loadingLabel => 'Loading';
 
   @override
@@ -348,6 +354,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get fieldTitleRequired => 'Give the quest a name.';
 
   @override
+  String fieldTooLong(String max) {
+    return 'Too long. Keep it to $max characters.';
+  }
+
+  @override
   String get fieldNotes => 'Notes';
 
   @override
@@ -400,6 +411,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get fieldEstimate => 'Estimated minutes';
+
+  @override
+  String fieldEstimateInvalid(String min, String max) {
+    return 'Enter whole minutes from $min to $max.';
+  }
 
   @override
   String get fieldIntention => 'When and where will you do it?';
@@ -548,6 +564,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get completeSheetMinutesHelp => 'Optional. Honest numbers keep your character honest.';
+
+  @override
+  String completeSheetMinutesInvalid(String max) {
+    return 'Enter whole minutes, up to $max.';
+  }
 
   @override
   String get completeSheetConfirm => 'Seal';
@@ -1363,6 +1384,43 @@ class AppLocalizationsEn extends AppLocalizations {
   String get notifWeekly => 'Weekly chronicle';
 
   @override
+  String get pushDevice => 'Notifications on this device';
+
+  @override
+  String get pushDeviceOn => 'On. Notifications reach you here even while Wyrd is closed.';
+
+  @override
+  String get pushDeviceOff => 'Off. Allow them so news reaches you while Wyrd is closed.';
+
+  @override
+  String get pushDeviceBlocked => 'Blocked. Allow notifications for Wyrd in your browser or system settings.';
+
+  @override
+  String get pushAllow => 'Allow';
+
+  @override
+  String get pushUnsupported => 'This browser can\'t receive notifications.';
+
+  @override
+  String get pushUnsupportedDevice => 'This device can\'t receive notifications.';
+
+  @override
+  String get pushInstallHint =>
+      'On iPhone, add Wyrd to your Home Screen (Share, then Add to Home Screen) and open it from there to get notifications.';
+
+  @override
+  String get pushInAppFallback => 'Something new is waiting for you.';
+
+  @override
+  String get pushOpen => 'Open';
+
+  @override
+  String get pushChannelName => 'Guild and chronicle';
+
+  @override
+  String get pushChannelDescription => 'Reactions, comments and your weekly chronicle.';
+
+  @override
   String get quietHours => 'Quiet hours';
 
   @override
@@ -1375,6 +1433,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sectionAppearance => 'Appearance';
+
+  @override
+  String get installHintTitle => 'Add Wyrd to your Home Screen';
+
+  @override
+  String get installHintBody =>
+      'Tap Share (it may be under •••), then Add to Home Screen. Opened from there, Wyrd runs full screen and can send you notifications.';
 
   @override
   String get reducedMotion => 'Reduce motion';
@@ -1423,6 +1488,138 @@ class AppLocalizationsEn extends AppLocalizations {
   String get signOut => 'Sign out';
 
   @override
+  String get authHeadline => 'Keep your legend safe';
+
+  @override
+  String get authIntro =>
+      'Sign in to sync your character across devices and join guilds. Everything you made as a guest comes with you.';
+
+  @override
+  String get authContinueEmail => 'Continue with email';
+
+  @override
+  String get authContinueGoogle => 'Continue with Google';
+
+  @override
+  String get authContinueGithub => 'Continue with GitHub';
+
+  @override
+  String get authOr => 'or';
+
+  @override
+  String get authUsePassword => 'Use a password instead';
+
+  @override
+  String get authUseCode => 'Email me a code instead';
+
+  @override
+  String get authCodeTitle => 'Check your email';
+
+  @override
+  String authCodeSent(String email) {
+    return 'We sent a 6-digit code to $email. It works for an hour.';
+  }
+
+  @override
+  String get authCodeLabel => '6-digit code';
+
+  @override
+  String get authPasteCode => 'Paste code';
+
+  @override
+  String get authVerify => 'Verify';
+
+  @override
+  String get authResend => 'Send a new code';
+
+  @override
+  String authResendIn(String seconds) {
+    return 'New code in ${seconds}s';
+  }
+
+  @override
+  String get authCodeResent => 'A new code is on its way.';
+
+  @override
+  String get authChangeEmail => 'Use a different email';
+
+  @override
+  String get authForgotPassword => 'Forgot password?';
+
+  @override
+  String get authResetTitle => 'Reset your password';
+
+  @override
+  String get authResetBody => 'Enter your email and we\'ll send a 6-digit code to set a new password.';
+
+  @override
+  String get authSendCode => 'Send code';
+
+  @override
+  String get authNewPasswordTitle => 'Choose a new password';
+
+  @override
+  String get authNewPassword => 'New password';
+
+  @override
+  String get authSavePassword => 'Save password';
+
+  @override
+  String get authPasswordSaved => 'Password saved. You\'re signed in.';
+
+  @override
+  String get authPasswordRules => 'At least 8 characters, with letters and numbers.';
+
+  @override
+  String get authShowPassword => 'Show password';
+
+  @override
+  String get authHidePassword => 'Hide password';
+
+  @override
+  String get authErrEmail => 'Enter a valid email address.';
+
+  @override
+  String get authErrCodeLength => 'Enter all 6 digits.';
+
+  @override
+  String get authErrCode => 'That code is wrong or has expired. Check it, or ask for a new one.';
+
+  @override
+  String get authErrNotConfirmed => 'Confirm your email first. We\'ve sent you a new code.';
+
+  @override
+  String get authErrRateLimit => 'Too many tries. Wait a minute, then try again.';
+
+  @override
+  String get authErrWeakPassword => 'Choose a stronger password: at least 8 characters, with letters and numbers.';
+
+  @override
+  String get authErrSamePassword => 'That\'s your current password. Choose a new one.';
+
+  @override
+  String get authErrAccountExists => 'An account with this email already exists. Sign in instead.';
+
+  @override
+  String get authErrProvider => 'This sign-in option isn\'t available right now.';
+
+  @override
+  String get authErrNetwork => 'Can\'t reach the server. Check your connection and try again.';
+
+  @override
+  String get authErrCancelled => 'Sign-in was cancelled.';
+
+  @override
+  String get deleteAccount => 'Delete account';
+
+  @override
+  String get deleteAccountBody =>
+      'This permanently deletes your account and everything we store for it, then signs you out and clears this device. Your comments in guilds stay, shown as from a former member. This can\'t be undone.';
+
+  @override
+  String get accountDeleted => 'Your account has been deleted.';
+
+  @override
   String get createAccount => 'Create account';
 
   @override
@@ -1435,14 +1632,56 @@ class AppLocalizationsEn extends AppLocalizations {
   String get deleteAllData => 'Delete all data';
 
   @override
-  String get deleteAllDataBody =>
-      'This permanently removes your character, quests and history from this device and, if signed in, from our servers.';
+  String get deleteAllDataBody => 'This permanently removes your character, quests and history from this device.';
+
+  @override
+  String get signOutClearDevice => 'Sign out and clear this device';
+
+  @override
+  String get signOutClearDeviceBody =>
+      'You\'ll be signed out and this device forgets your character, quests and history. Everything already synced stays in your account; changes not synced yet are lost.';
+
+  @override
+  String get deviceCleared => 'Signed out. This device no longer holds your data.';
+
+  @override
+  String get handoverTitle => 'Unsaved changes from another account';
+
+  @override
+  String handoverBody(String email, String changes) {
+    return '$email has $changes on this device not yet saved to that account. If you continue, they are removed from this device. To keep them, sign out now, sign in with $email and let them sync.';
+  }
+
+  @override
+  String handoverBodyNoEmail(String changes) {
+    return 'Another account has $changes on this device not yet saved to it. If you continue, they are removed from this device. To keep them, sign out now, sign in with that account and let them sync.';
+  }
+
+  @override
+  String get handoverOneChange => '1 change';
+
+  @override
+  String handoverChanges(String count) {
+    return '$count changes';
+  }
+
+  @override
+  String get handoverKeep => 'Keep them and sign out';
+
+  @override
+  String get handoverRemove => 'Remove them and continue';
 
   @override
   String get dataDeleted => 'All data deleted.';
 
   @override
   String get aboutLicense => 'Source-available under the PolyForm Strict License 1.0.0.';
+
+  @override
+  String get legalPrivacy => 'Privacy';
+
+  @override
+  String get legalTerms => 'Terms';
 
   @override
   String get authTitle => 'Your account';
@@ -1452,12 +1691,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get authPassword => 'Password';
-
-  @override
-  String get authMagicLink => 'Email me a sign-in link';
-
-  @override
-  String get authMagicLinkSent => 'Check your inbox for the sign-in link.';
 
   @override
   String get authInvalid => 'That email and password don\'t match.';

@@ -1,0 +1,48 @@
+# Response headers for Cloudflare Pages
+# (https://developers.cloudflare.com/pages/configuration/headers/).
+# `flutter build web` copies this file into build/web unchanged.
+#
+# No Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy on purpose: only
+# Flutter's multi-threaded WebAssembly build needs them (this site ships the
+# JavaScript build), and under COEP every cross-origin file, such as the
+# CanvasKit engine from www.gstatic.com, would load only if its server opts in.
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+
+# Entry points, manifest and service workers keep their names between
+# releases: always revalidate so a deploy reaches everyone on the next load.
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/flutter_bootstrap.js
+  Cache-Control: no-cache
+/flutter.js
+  Cache-Control: no-cache
+/main.dart.js
+  Cache-Control: no-cache
+/flutter_service_worker.js
+  Cache-Control: no-cache
+/firebase-messaging-sw.js
+  Cache-Control: no-cache
+/manifest.json
+  Cache-Control: no-cache
+/version.json
+  Cache-Control: no-cache
+/drift_worker.js
+  Cache-Control: no-cache
+/sqlite3.wasm
+  Cache-Control: no-cache
+
+# Engine, assets and icons are not content-hashed either, but only change with
+# a Flutter or asset update: reuse them for a day, then revalidate.
+/canvaskit/*
+  Cache-Control: public, max-age=86400, must-revalidate
+/assets/*
+  Cache-Control: public, max-age=86400, must-revalidate
+/icons/*
+  Cache-Control: public, max-age=86400, must-revalidate

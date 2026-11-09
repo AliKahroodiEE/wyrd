@@ -1,11 +1,13 @@
 /**
  * notify — server-side social and summary notifications (ADR-007).
  *
- * Internal endpoint: requires the service-role key (Authorization: Bearer)
- * or INTERNAL_FUNCTION_SECRET (x-internal-secret). Two request shapes:
+ * Internal endpoint (verify_jwt = false): requires a project secret key in
+ * the `apikey` header (legacy projects: the service-role key, also as a
+ * bearer token) or INTERNAL_FUNCTION_SECRET (x-internal-secret). Two shapes:
  *
  *   Direct:  { user_id, category, template_key, params?, guild_id?, actor_id?, dedupe_key? }
- *   Supabase Database Webhook (INSERT on reactions, comments, feed_events):
+ *   Database-Webhook-shaped, sent by the …_notify_triggers.sql triggers on
+ *   INSERT into reactions, comments and feed_events (challenge milestones):
  *            { type: "INSERT", table, schema, record, old_record }
  *
  * For every recipient, in order: category toggle → guild mute → block list

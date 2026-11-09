@@ -12,6 +12,8 @@ import 'data/db/database.dart';
 import 'data/demo/demo_seed.dart';
 import 'data/remote/backend.dart';
 import 'data/repositories/settings_repository.dart';
+import 'features/auth/handover_host.dart';
+import 'features/notifications/push_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +41,9 @@ Future<void> main() async {
         initialThemeProvider.overrideWithValue(profile.theme),
         initialRegionalPrefsProvider.overrideWithValue(regionalPrefs),
       ],
-      child: const WyrdApp(),
+      // Push, when configured (never delays the first frame), and the question
+      // a sign-in asks when another account left unsynced work here.
+      child: const PushHost(child: HandoverHost(child: WyrdApp())),
     ),
   );
 }

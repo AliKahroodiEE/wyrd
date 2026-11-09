@@ -220,6 +220,9 @@ class ProgressionRepository {
         );
       }
       await _enqueue('completion', completionId);
+      // After the completion. Without it the server would keep the quest
+      // open, and every other device would list it as still to do.
+      if (!quest.isRecurring) await _enqueue('quest', quest.id, fields: const ['status']);
     });
 
     final totalsAfter = await attributeTotals();
@@ -277,28 +280,34 @@ class ProgressionRepository {
       await (_db.update(
         _db.completions,
       )..where((x) => x.id.equals(completionId))).write(const CompletionsCompanion(state: Value('undone')));
-      await (_db.update(_db.quests)..where((q) => q.id.equals(c.questId) & q.status.equals('completed'))).write(
-        QuestsCompanion(status: const Value('active'), updatedAt: Value(_now())),
-      );
+      final reopened =
+          await (_db.update(_db.quests)..where((q) => q.id.equals(c.questId) & q.status.equals('completed'))).write(
+            QuestsCompanion(status: const Value('active'), updatedAt: Value(_now())),
+          );
       await _enqueue('completion_undo', completionId);
+      if (reopened > 0) await _enqueue('quest', c.questId, fields: const ['status']);
     });
     return true;
   }
 
   /// Replaces a provisional local result with the server's authoritative
   /// one. Both stay in the ledger; the provisional rows are superseded.
-  Future<void> reconcile(String completionId, EvaluationProposal proposal, RewardResult result) =>
-      _db.transaction(() async {
-        final eval = await (_db.select(
-          _db.evaluations,
-        )..where((e) => e.completionId.equals(completionId))).getSingleOrNull();
-        if (eval == null) return;
-        await (_db.update(_db.ledgerEntries)..where((l) => l.completionId.equals(completionId))).write(
-          const LedgerEntriesCompanion(superseded: Value(true)),
-        );
-        await _writeEvaluation(completionId, eval.localDay, proposal, result, provisional: false);
-        await _writeGrants(completionId, eval.localDay, result, provisional: false);
-      });
+  Future<void> reconcile(String completionId, EvaluationProposal proposal, RewardResult result) => _db.transaction(
+    () async {
+      // Undone while the evaluation was on its way: the reversals stand.
+      final completion = await (_db.select(_db.completions)..where((c) => c.id.equals(completionId))).getSingleOrNull();
+      if (completion == null || completion.state == 'undone') return;
+      final eval = await (_db.select(
+        _db.evaluations,
+      )..where((e) => e.completionId.equals(completionId))).getSingleOrNull();
+      if (eval == null) return;
+      await (_db.update(_db.ledgerEntries)..where((l) => l.completionId.equals(completionId))).write(
+        const LedgerEntriesCompanion(superseded: Value(true)),
+      );
+      await _writeEvaluation(completionId, eval.localDay, proposal, result, provisional: false);
+      await _writeGrants(completionId, eval.localDay, result, provisional: false);
+    },
+  );
 
   /// Records a server-confirmed result for a completion that arrived from
   /// another device (no local evaluation exists yet).
@@ -406,14 +415,16 @@ class ProgressionRepository {
     return fresh;
   }
 
-  Future<void> _enqueue(String entity, String id) => _db
+  /// Queues a change for sync; [fields] are the server's names for what it
+  /// changed, and only those go up.
+  Future<void> _enqueue(String entity, String id, {List<String>? fields}) => _db
       .into(_db.outboxEntries)
       .insert(
         OutboxEntriesCompanion.insert(
           entity: entity,
           entityId: id,
           op: 'upsert',
-          payload: jsonEncode({'id': id}),
+          payload: jsonEncode({'id': id, 'fields': ?fields}),
           createdAt: _now(),
         ),
       );

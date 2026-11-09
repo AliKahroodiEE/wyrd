@@ -1,0 +1,189 @@
+name: Back up database
+
+# Daily logical backup of the Supabase database (the Free plan has no
+# automatic backups): the three dumps Supabase documents for a restore,
+# roles (--role-only), schema, and data (--data-only --use-copy). Each is
+# gzipped and encrypted with age to the BACKUP_AGE_RECIPIENT public key
+# (several keys may be listed, separated by spaces) and kept as a workflow
+# artifact for 14 days. Only the holder of the matching private key can read
+# them, so the artifact is safe in a public repository. Restore steps:
+# backend/README.md ("Backups").
+#
+# GitHub runners have no IPv6 and the project's direct database host is
+# IPv6-only, so the dumps connect through the Supavisor session pooler
+# (IPv4, port 5432), whose address comes from the Management API.
+#
+# The daily run is also database activity, which keeps a Free project from
+# being paused after ~7 idle days. GitHub disables scheduled workflows in a
+# public repository after 60 days without commits; re-enable it in the
+# Actions tab if that happens.
+#
+# Vault secrets (wyrd_project_url, wyrd_secret_key) are dumped encrypted with
+# the project's root key, which Supabase does not export: restored into
+# another project they cannot be decrypted. Re-run the backend deploy there
+# to store new ones.
+on:
+  schedule:
+    - cron: '23 3 * * *' # 03:23 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Dump, encrypt and upload
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+    steps:
+      # Runners print each step's environment in its log, and variables are
+      # not masked. So BACKUP_AGE_RECIPIENT is only in the environment of the
+      # steps after this gate, which stops a private key stored there by
+      # mistake before any log can show it.
+      - name: Refuse a private key in BACKUP_AGE_RECIPIENT
+        if: contains(vars.BACKUP_AGE_RECIPIENT, 'SECRET-KEY')
+        run: |
+          echo "::error title=Private key in BACKUP_AGE_RECIPIENT::The variable holds an age private key. Delete it now (gh variable delete BACKUP_AGE_RECIPIENT), create a new key pair and store only its public key (age1...). Backups encrypted to the old pair should be treated as readable by others."
+          exit 1
+
+      - name: Check configuration
+        id: check
+        env:
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
+        run: |
+          missing=()
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_ID SUPABASE_DB_PASSWORD BACKUP_AGE_RECIPIENT; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice title=Backup skipped::Not configured: ${missing[*]} (secrets, and BACKUP_AGE_RECIPIENT as a repository variable). See backend/README.md (Backups)."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$SUPABASE_PROJECT_ID" =~ ^[a-z]{20}$ ]]; then
+            echo "::error title=Invalid SUPABASE_PROJECT_ID::It must be the 20-letter project ref."
+            exit 1
+          fi
+          position=0
+          for recipient in ${BACKUP_AGE_RECIPIENT//,/ }; do
+            position=$((position + 1))
+            if ! [[ "$recipient" =~ ^age1[02-9ac-hj-np-z]{58}$ ]]; then
+              # Never print the value: it may be a private key pasted by mistake.
+              echo "::error title=Invalid BACKUP_AGE_RECIPIENT::Entry $position is not an age public key (age1 followed by 58 characters). If it is a private key (AGE-SECRET-KEY-...), delete the variable now, create a new key pair and store only the public key."
+              exit 1
+            fi
+          done
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - uses: supabase/setup-cli@v3
+        if: steps.check.outputs.enabled == 'true'
+        with:
+          version: 3.0.0
+
+      - name: Install age
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age
+          age --version
+
+      - name: Dump, compress and encrypt
+        id: dump
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
+        run: |
+          api="https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_ID"
+          auth=(-H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN")
+
+          # The session pooler: the pooler's connection string, switched from
+          # transaction mode (6543) to session mode (5432), which pg_dump needs.
+          template="$(curl -fsS --retry 3 "${auth[@]}" "$api/config/database/pooler" |
+            jq -r 'map(select(.database_type == "PRIMARY"))[0].connection_string // empty')"
+          password="$(jq -rn --arg p "$SUPABASE_DB_PASSWORD" '$p | @uri')"
+          echo "::add-mask::$password"
+          url="${template/:\[YOUR-PASSWORD\]/:$password}"
+          url="${url/:6543\//:5432/}"
+          if ! [[ "$url" =~ ^postgres(ql)?://[^:@/]+:[^@]+@([^:/@]+):5432/[A-Za-z0-9_]+([?].*)?$ ]]; then
+            echo "::error title=No session pooler::Could not build the session pooler URL from the Management API. Check SUPABASE_ACCESS_TOKEN and that the project is not paused."
+            exit 1
+          fi
+          echo "Session pooler: ${BASH_REMATCH[2]}:5432"
+
+          # pg_dump must be at least the server's major version.
+          version="$(curl -fsS --retry 3 "${auth[@]}" "$api" | jq -r '.database.version // empty')"
+          major="${version%%.*}"
+          [[ "$major" =~ ^[0-9]+$ ]] || major=17
+
+          # A throwaway CLI project, so the backup does not depend on the
+          # app's config.toml (and its env(...) values).
+          work="$RUNNER_TEMP/cli"
+          plain="$RUNNER_TEMP/plain"
+          out="$RUNNER_TEMP/backup"
+          mkdir -p "$work/supabase" "$plain" "$out"
+          printf 'project_id = "wyrd-backup"\n\n[db]\nmajor_version = %s\n' "$major" > "$work/supabase/config.toml"
+
+          supabase db dump --workdir "$work" --remote="$url" --role-only -f "$plain/roles.sql"
+          supabase db dump --workdir "$work" --remote="$url" -f "$plain/schema.sql"
+          supabase db dump --workdir "$work" --remote="$url" --data-only --use-copy -f "$plain/data.sql"
+
+          recipients=()
+          for recipient in ${BACKUP_AGE_RECIPIENT//,/ }; do recipients+=(-r "$recipient"); done
+          stamp="$(date -u +%Y-%m-%dT%H%MZ)"
+          files=()
+          for part in roles schema data; do
+            if [ ! -s "$plain/$part.sql" ]; then
+              echo "::error::The $part dump is empty."
+              exit 1
+            fi
+            gzip -9 -n -c "$plain/$part.sql" | age "${recipients[@]}" -o "$out/$part.sql.gz.age"
+            rm -f "$plain/$part.sql"
+            files+=("$part.sql.gz.age")
+          done
+
+          (
+            cd "$out"
+            jq -n --arg created "$stamp" --arg postgres "$version" --arg cli "$(supabase --version)" \
+              --argjson files "$(for f in "${files[@]}"; do
+                jq -n --arg name "$f" --argjson bytes "$(stat -c %s "$f")" \
+                  --arg sha256 "$(sha256sum "$f" | cut -d' ' -f1)" '{name: $name, bytes: $bytes, sha256: $sha256}'
+              done | jq -s .)" \
+              '{created: $created, postgres: $postgres, supabase_cli: $cli, encryption: "age", files: $files}' \
+              > manifest.json
+          )
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the encrypted backup
+        if: steps.check.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: wyrd-db-backup-${{ steps.dump.outputs.stamp }}
+          path: ${{ runner.temp }}/backup/
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Summary
+        if: steps.check.outputs.enabled == 'true'
+        run: |
+          {
+            echo "### Database backup ${{ steps.dump.outputs.stamp }}"
+            echo
+            echo "| File | Size |"
+            echo "| --- | --- |"
+            jq -r '.files[] | "| \(.name) | \(.bytes) bytes |"' "$RUNNER_TEMP/backup/manifest.json"
+            echo
+            echo "Encrypted with age, kept 14 days. Restore: backend/README.md (Backups)."
+          } >> "$GITHUB_STEP_SUMMARY"

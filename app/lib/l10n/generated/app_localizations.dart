@@ -230,6 +230,18 @@ abstract class AppLocalizations {
   /// **'Something went wrong on our side. Your data is safe.'**
   String get errorGeneric;
 
+  /// No description provided for @actionRateLimited.
+  ///
+  /// In en, this message translates to:
+  /// **'Too many changes in a row. Wait a minute, then try again.'**
+  String get actionRateLimited;
+
+  /// No description provided for @commentRateLimited.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'ve posted a lot in this guild in the last hour. Try again later.'**
+  String get commentRateLimited;
+
   /// No description provided for @loadingLabel.
   ///
   /// In en, this message translates to:
@@ -698,6 +710,12 @@ abstract class AppLocalizations {
   /// **'Give the quest a name.'**
   String get fieldTitleRequired;
 
+  /// No description provided for @fieldTooLong.
+  ///
+  /// In en, this message translates to:
+  /// **'Too long. Keep it to {max} characters.'**
+  String fieldTooLong(String max);
+
   /// No description provided for @fieldNotes.
   ///
   /// In en, this message translates to:
@@ -805,6 +823,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Estimated minutes'**
   String get fieldEstimate;
+
+  /// No description provided for @fieldEstimateInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter whole minutes from {min} to {max}.'**
+  String fieldEstimateInvalid(String min, String max);
 
   /// No description provided for @fieldIntention.
   ///
@@ -1093,6 +1117,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Optional. Honest numbers keep your character honest.'**
   String get completeSheetMinutesHelp;
+
+  /// No description provided for @completeSheetMinutesInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter whole minutes, up to {max}.'**
+  String completeSheetMinutesInvalid(String max);
 
   /// No description provided for @completeSheetConfirm.
   ///
@@ -2552,6 +2582,78 @@ abstract class AppLocalizations {
   /// **'Weekly chronicle'**
   String get notifWeekly;
 
+  /// No description provided for @pushDevice.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications on this device'**
+  String get pushDevice;
+
+  /// No description provided for @pushDeviceOn.
+  ///
+  /// In en, this message translates to:
+  /// **'On. Notifications reach you here even while Wyrd is closed.'**
+  String get pushDeviceOn;
+
+  /// No description provided for @pushDeviceOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Off. Allow them so news reaches you while Wyrd is closed.'**
+  String get pushDeviceOff;
+
+  /// No description provided for @pushDeviceBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Blocked. Allow notifications for Wyrd in your browser or system settings.'**
+  String get pushDeviceBlocked;
+
+  /// No description provided for @pushAllow.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow'**
+  String get pushAllow;
+
+  /// No description provided for @pushUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'This browser can\'t receive notifications.'**
+  String get pushUnsupported;
+
+  /// No description provided for @pushUnsupportedDevice.
+  ///
+  /// In en, this message translates to:
+  /// **'This device can\'t receive notifications.'**
+  String get pushUnsupportedDevice;
+
+  /// No description provided for @pushInstallHint.
+  ///
+  /// In en, this message translates to:
+  /// **'On iPhone, add Wyrd to your Home Screen (Share, then Add to Home Screen) and open it from there to get notifications.'**
+  String get pushInstallHint;
+
+  /// No description provided for @pushInAppFallback.
+  ///
+  /// In en, this message translates to:
+  /// **'Something new is waiting for you.'**
+  String get pushInAppFallback;
+
+  /// No description provided for @pushOpen.
+  ///
+  /// In en, this message translates to:
+  /// **'Open'**
+  String get pushOpen;
+
+  /// No description provided for @pushChannelName.
+  ///
+  /// In en, this message translates to:
+  /// **'Guild and chronicle'**
+  String get pushChannelName;
+
+  /// No description provided for @pushChannelDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Reactions, comments and your weekly chronicle.'**
+  String get pushChannelDescription;
+
   /// No description provided for @quietHours.
   ///
   /// In en, this message translates to:
@@ -2575,6 +2677,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Appearance'**
   String get sectionAppearance;
+
+  /// No description provided for @installHintTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Add Wyrd to your Home Screen'**
+  String get installHintTitle;
+
+  /// No description provided for @installHintBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap Share (it may be under •••), then Add to Home Screen. Opened from there, Wyrd runs full screen and can send you notifications.'**
+  String get installHintBody;
 
   /// No description provided for @reducedMotion.
   ///
@@ -2660,6 +2774,258 @@ abstract class AppLocalizations {
   /// **'Sign out'**
   String get signOut;
 
+  /// No description provided for @authHeadline.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep your legend safe'**
+  String get authHeadline;
+
+  /// No description provided for @authIntro.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in to sync your character across devices and join guilds. Everything you made as a guest comes with you.'**
+  String get authIntro;
+
+  /// No description provided for @authContinueEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue with email'**
+  String get authContinueEmail;
+
+  /// No description provided for @authContinueGoogle.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue with Google'**
+  String get authContinueGoogle;
+
+  /// No description provided for @authContinueGithub.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue with GitHub'**
+  String get authContinueGithub;
+
+  /// No description provided for @authOr.
+  ///
+  /// In en, this message translates to:
+  /// **'or'**
+  String get authOr;
+
+  /// No description provided for @authUsePassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Use a password instead'**
+  String get authUsePassword;
+
+  /// No description provided for @authUseCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Email me a code instead'**
+  String get authUseCode;
+
+  /// No description provided for @authCodeTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Check your email'**
+  String get authCodeTitle;
+
+  /// No description provided for @authCodeSent.
+  ///
+  /// In en, this message translates to:
+  /// **'We sent a 6-digit code to {email}. It works for an hour.'**
+  String authCodeSent(String email);
+
+  /// No description provided for @authCodeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'6-digit code'**
+  String get authCodeLabel;
+
+  /// No description provided for @authPasteCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Paste code'**
+  String get authPasteCode;
+
+  /// No description provided for @authVerify.
+  ///
+  /// In en, this message translates to:
+  /// **'Verify'**
+  String get authVerify;
+
+  /// No description provided for @authResend.
+  ///
+  /// In en, this message translates to:
+  /// **'Send a new code'**
+  String get authResend;
+
+  /// No description provided for @authResendIn.
+  ///
+  /// In en, this message translates to:
+  /// **'New code in {seconds}s'**
+  String authResendIn(String seconds);
+
+  /// No description provided for @authCodeResent.
+  ///
+  /// In en, this message translates to:
+  /// **'A new code is on its way.'**
+  String get authCodeResent;
+
+  /// No description provided for @authChangeEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Use a different email'**
+  String get authChangeEmail;
+
+  /// No description provided for @authForgotPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Forgot password?'**
+  String get authForgotPassword;
+
+  /// No description provided for @authResetTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset your password'**
+  String get authResetTitle;
+
+  /// No description provided for @authResetBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter your email and we\'ll send a 6-digit code to set a new password.'**
+  String get authResetBody;
+
+  /// No description provided for @authSendCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Send code'**
+  String get authSendCode;
+
+  /// No description provided for @authNewPasswordTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a new password'**
+  String get authNewPasswordTitle;
+
+  /// No description provided for @authNewPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'New password'**
+  String get authNewPassword;
+
+  /// No description provided for @authSavePassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Save password'**
+  String get authSavePassword;
+
+  /// No description provided for @authPasswordSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Password saved. You\'re signed in.'**
+  String get authPasswordSaved;
+
+  /// No description provided for @authPasswordRules.
+  ///
+  /// In en, this message translates to:
+  /// **'At least 8 characters, with letters and numbers.'**
+  String get authPasswordRules;
+
+  /// No description provided for @authShowPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Show password'**
+  String get authShowPassword;
+
+  /// No description provided for @authHidePassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide password'**
+  String get authHidePassword;
+
+  /// No description provided for @authErrEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a valid email address.'**
+  String get authErrEmail;
+
+  /// No description provided for @authErrCodeLength.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter all 6 digits.'**
+  String get authErrCodeLength;
+
+  /// No description provided for @authErrCode.
+  ///
+  /// In en, this message translates to:
+  /// **'That code is wrong or has expired. Check it, or ask for a new one.'**
+  String get authErrCode;
+
+  /// No description provided for @authErrNotConfirmed.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm your email first. We\'ve sent you a new code.'**
+  String get authErrNotConfirmed;
+
+  /// No description provided for @authErrRateLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'Too many tries. Wait a minute, then try again.'**
+  String get authErrRateLimit;
+
+  /// No description provided for @authErrWeakPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a stronger password: at least 8 characters, with letters and numbers.'**
+  String get authErrWeakPassword;
+
+  /// No description provided for @authErrSamePassword.
+  ///
+  /// In en, this message translates to:
+  /// **'That\'s your current password. Choose a new one.'**
+  String get authErrSamePassword;
+
+  /// No description provided for @authErrAccountExists.
+  ///
+  /// In en, this message translates to:
+  /// **'An account with this email already exists. Sign in instead.'**
+  String get authErrAccountExists;
+
+  /// No description provided for @authErrProvider.
+  ///
+  /// In en, this message translates to:
+  /// **'This sign-in option isn\'t available right now.'**
+  String get authErrProvider;
+
+  /// No description provided for @authErrNetwork.
+  ///
+  /// In en, this message translates to:
+  /// **'Can\'t reach the server. Check your connection and try again.'**
+  String get authErrNetwork;
+
+  /// No description provided for @authErrCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign-in was cancelled.'**
+  String get authErrCancelled;
+
+  /// No description provided for @deleteAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete account'**
+  String get deleteAccount;
+
+  /// No description provided for @deleteAccountBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This permanently deletes your account and everything we store for it, then signs you out and clears this device. Your comments in guilds stay, shown as from a former member. This can\'t be undone.'**
+  String get deleteAccountBody;
+
+  /// No description provided for @accountDeleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Your account has been deleted.'**
+  String get accountDeleted;
+
   /// No description provided for @createAccount.
   ///
   /// In en, this message translates to:
@@ -2687,8 +3053,68 @@ abstract class AppLocalizations {
   /// No description provided for @deleteAllDataBody.
   ///
   /// In en, this message translates to:
-  /// **'This permanently removes your character, quests and history from this device and, if signed in, from our servers.'**
+  /// **'This permanently removes your character, quests and history from this device.'**
   String get deleteAllDataBody;
+
+  /// No description provided for @signOutClearDevice.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign out and clear this device'**
+  String get signOutClearDevice;
+
+  /// No description provided for @signOutClearDeviceBody.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'ll be signed out and this device forgets your character, quests and history. Everything already synced stays in your account; changes not synced yet are lost.'**
+  String get signOutClearDeviceBody;
+
+  /// No description provided for @deviceCleared.
+  ///
+  /// In en, this message translates to:
+  /// **'Signed out. This device no longer holds your data.'**
+  String get deviceCleared;
+
+  /// No description provided for @handoverTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsaved changes from another account'**
+  String get handoverTitle;
+
+  /// No description provided for @handoverBody.
+  ///
+  /// In en, this message translates to:
+  /// **'{email} has {changes} on this device not yet saved to that account. If you continue, they are removed from this device. To keep them, sign out now, sign in with {email} and let them sync.'**
+  String handoverBody(String email, String changes);
+
+  /// No description provided for @handoverBodyNoEmail.
+  ///
+  /// In en, this message translates to:
+  /// **'Another account has {changes} on this device not yet saved to it. If you continue, they are removed from this device. To keep them, sign out now, sign in with that account and let them sync.'**
+  String handoverBodyNoEmail(String changes);
+
+  /// No description provided for @handoverOneChange.
+  ///
+  /// In en, this message translates to:
+  /// **'1 change'**
+  String get handoverOneChange;
+
+  /// No description provided for @handoverChanges.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} changes'**
+  String handoverChanges(String count);
+
+  /// No description provided for @handoverKeep.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep them and sign out'**
+  String get handoverKeep;
+
+  /// No description provided for @handoverRemove.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove them and continue'**
+  String get handoverRemove;
 
   /// No description provided for @dataDeleted.
   ///
@@ -2701,6 +3127,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Source-available under the PolyForm Strict License 1.0.0.'**
   String get aboutLicense;
+
+  /// No description provided for @legalPrivacy.
+  ///
+  /// In en, this message translates to:
+  /// **'Privacy'**
+  String get legalPrivacy;
+
+  /// No description provided for @legalTerms.
+  ///
+  /// In en, this message translates to:
+  /// **'Terms'**
+  String get legalTerms;
 
   /// No description provided for @authTitle.
   ///
@@ -2719,18 +3157,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Password'**
   String get authPassword;
-
-  /// No description provided for @authMagicLink.
-  ///
-  /// In en, this message translates to:
-  /// **'Email me a sign-in link'**
-  String get authMagicLink;
-
-  /// No description provided for @authMagicLinkSent.
-  ///
-  /// In en, this message translates to:
-  /// **'Check your inbox for the sign-in link.'**
-  String get authMagicLinkSent;
 
   /// No description provided for @authInvalid.
   ///

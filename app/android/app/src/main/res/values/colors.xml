@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tints the status-bar icon and app name of reminders and pushes (AppColors.crimson). -->
+    <color name="notification_accent">#C0202D</color>
+</resources>

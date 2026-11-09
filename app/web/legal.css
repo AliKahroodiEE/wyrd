@@ -1,0 +1,115 @@
+/* Privacy policy and terms (privacy.html, terms.html): plain pages in the
+   app's palettes and fonts. The fonts come from the app's own build output
+   (assets/assets/fonts), so the pages make no third-party requests. */
+
+@font-face {
+  font-family: "Cinzel";
+  src: url("assets/assets/fonts/Cinzel-Variable.ttf") format("truetype");
+  font-weight: 400 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("assets/assets/fonts/Inter-Variable.ttf") format("truetype");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("assets/assets/fonts/Vazirmatn-Variable.ttf") format("truetype");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  /* Vellum (light) */
+  --canvas: #f4ede1;
+  --surface: #fbf7ef;
+  --ink: #2a2220;
+  --muted: #6b5f58;
+  --hairline: #e1d5c3;
+  --accent: #c0202d;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Ashen Codex (dark) */
+    --canvas: #09090e;
+    --surface: #12121a;
+    --ink: #ece7e1;
+    --muted: #a39b94;
+    --hairline: #26262f;
+    --accent: #ff5a64;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font: 16px/1.65 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+a { color: var(--accent); text-underline-offset: 0.18em; }
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 20px 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+.brand {
+  font: 700 22px/1 "Cinzel", Georgia, serif;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.bar nav { display: flex; gap: 16px; flex-wrap: wrap; }
+.bar nav a { color: var(--muted); text-decoration: none; }
+.bar nav a:hover { color: var(--ink); }
+
+main { max-width: 760px; margin: 0 auto; padding: 8px 16px 32px; }
+
+article {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  padding: 8px 24px 16px;
+  margin-top: 24px;
+  scroll-margin-top: 16px;
+}
+
+h1 {
+  font: 700 clamp(26px, 6vw, 34px)/1.2 "Cinzel", Georgia, serif;
+  letter-spacing: 0.02em;
+  margin: 24px 0 4px;
+}
+h2 { font-size: 18px; line-height: 1.35; margin: 28px 0 6px; }
+.meta { color: var(--muted); margin-top: 0; font-size: 14px; }
+ul { padding-inline-start: 22px; }
+li { margin: 6px 0; }
+
+[lang="fa"] { font-family: "Vazirmatn", Tahoma, sans-serif; }
+[lang="fa"] h1 { font-family: "Vazirmatn", Tahoma, sans-serif; letter-spacing: 0; }
+[lang="fa"] { line-height: 1.9; }
+
+footer {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 16px 40px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+@media (max-width: 480px) {
+  article { padding: 4px 16px 12px; border-radius: 12px; }
+}

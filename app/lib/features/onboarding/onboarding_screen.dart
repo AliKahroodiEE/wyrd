@@ -12,6 +12,7 @@ import '../../design/sigils.dart';
 import '../../design/tokens.dart';
 import '../../l10n/content.dart';
 import '../quests/complete_flow.dart';
+import '../quests/quest_limits.dart';
 import '../settings/theme_picker.dart';
 
 /// First-run flow (ux-spec §4): language → name and sigil → areas →
@@ -75,7 +76,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   Future<void> _swear({required bool completeNow}) async {
     final title = _quest.text.trim();
-    if (title.isEmpty || _busy) return;
+    if (title.isEmpty || title.length > QuestLimits.titleMax || _busy) return;
     setState(() => _busy = true);
     final now = DateTime.now();
     final quest = await ref
@@ -289,8 +290,11 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   Widget _firstQuest(BuildContext context) {
     final l10n = context.l10n;
+    final f = ref.fmt(context);
     final text = Theme.of(context).textTheme;
-    final ready = _quest.text.trim().isNotEmpty && !_busy;
+    // Over the limit only while an input method is still composing.
+    final tooLong = tooLongError(_quest.text, QuestLimits.titleMax, l10n, f);
+    final ready = _quest.text.trim().isNotEmpty && tooLong == null && !_busy;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -300,7 +304,9 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         const SizedBox(height: AppSpace.xl),
         TextField(
           controller: _quest,
-          decoration: InputDecoration(labelText: l10n.fieldTitle, hintText: l10n.fieldTitleHint),
+          inputFormatters: const [StoredLengthLimit(QuestLimits.titleMax)],
+          buildCounter: lengthCounter(_quest, QuestLimits.titleMax, f, quiet: true),
+          decoration: InputDecoration(labelText: l10n.fieldTitle, hintText: l10n.fieldTitleHint, errorText: tooLong),
           onChanged: (_) => setState(() {}),
         ),
         const SizedBox(height: AppSpace.md),

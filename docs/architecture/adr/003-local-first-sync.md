@@ -10,8 +10,10 @@ cannot be trusted to write XP.
 ## Decision
 - The client's source of truth for UI is a local SQLite database via **Drift** (native SQLite
   on mobile/desktop, `sqlite3.wasm` + web worker on the web). The UI only reads local data.
-- Every mutation is written locally and appended to an **outbox**; a sync worker pushes
-  in order, then pulls by cursor. Realtime notifications trigger pulls.
+- Every mutation is written locally and appended to an **outbox**; a sync worker pulls by
+  cursor, pushes in order and pulls again, on sign-in, shortly after each local change and
+  every two minutes. Realtime only signals guild-hall changes (feed events, comments,
+  challenges), which trigger a refetch; personal tables are not published.
 - Quests/subtasks: field-level last-writer-wins using a hybrid logical clock.
   Completions and ledger entries: append-only, idempotent by client UUID.
 - **Progression is server-authoritative.** Offline, the client computes a provisional

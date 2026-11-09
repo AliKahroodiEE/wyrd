@@ -8,13 +8,13 @@ Status: Accepted for M0–M1 · Decisions are recorded as ADRs in [`adr/`](adr/)
 ┌──────────────── Flutter client (Android · iOS · Web) ────── ───────────────┐
 │  UI (adaptive shells, design system, l10n)                                            │
 │  State (Riverpod) ─▶ Repositories ─▶ Local store (Drift / SQLite, offline-first)      │
-│                                   └▶ Sync engine (outbox push, cursor pull, realtime)  │
+│                                   └▶ Sync engine (outbox push, cursor pull)            │
 │  wyrd_engine (pure Dart): provisional evaluation, curves, streaks, achievements   │
 └───────────────┬───────────────────────────────────────────────────────┬───────────────┘
                 │ HTTPS (PostgREST / RPC, JWT)                          │ WebSocket (Realtime)
 ┌───────────────▼───────────────────────────────────────────────────────▼───────────────┐
 │ Supabase                                                                              │
-│  Auth (email, magic link, Apple, Google)   Postgres 17 + RLS   Realtime   Storage     │
+│  Auth (email code, password, Google, GitHub)  Postgres 17 + RLS  Realtime  Storage    │
 │  Edge Functions (Deno/TS):                                                            │
 │    evaluate-completion  → Claude (proposal) → engine.ts (authoritative) → ledger RPC   │
 │    generate-chronicle   → facts query → Claude (narrative grounded in facts)          │
@@ -88,7 +88,7 @@ Edge function
 Client
 10. mark provisional ledger rows superseded; store authoritative rows; UI animates delta
 Other devices
-11. Realtime on ledger_entries/characters → pull → UI updates
+11. next sync cycle (after a local change, on sign-in, every 2 minutes) → pull → UI updates
 ```
 
 Idempotency: `apply_progression` is a no-op if confirmed ledger rows already exist for the
@@ -99,8 +99,17 @@ completion. Retries are safe at every step.
 - **Outbox:** every local mutation appends `(entity, id, op, payload, hlc)`; a single worker
   pushes in order with exponential backoff; rows are deleted on acknowledgement.
 - **Pull:** `sync_pull(cursor)` returns rows changed since the cursor per table (server
-  `updated_at` + monotonic `change_id`). Realtime events only trigger a pull; they are never
-  applied directly, which keeps one code path.
+  `updated_at` + monotonic `change_id`). Personal data is pulled on a schedule (sign-in,
+  shortly after each local change, every two minutes), never pushed by Realtime: Realtime
+  carries only the guild hall's change signals (feed events, comments, challenges), which
+  trigger a refetch and are never applied directly, keeping one code path.
+- **One account per device:** the local data and sync state belong to the account that
+  signed in (guest data joins the first one). Another account signing in on the same device
+  starts from a wiped database, so two accounts never mix.
+- **Account settings:** name, weekly target, motivation, AI opt-in and notification
+  switches are taken over from the server when another device changed them (merged key by
+  key against what this device last sent); language, calendar, time zone and week start
+  are per device and only sent.
 - **Conflicts:** quests and subtasks use field-level last-writer-wins by hybrid logical clock;
   completions and ledger entries are append-only (no conflicts); deletes are tombstones.
 - **Guest mode:** identical local schema; on sign-up the outbox is replayed against the new

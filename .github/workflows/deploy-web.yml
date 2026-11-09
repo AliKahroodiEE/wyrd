@@ -1,0 +1,180 @@
+name: Deploy web (Cloudflare Pages)
+
+# Builds the production web app (real backend, sign-in, push) and uploads it
+# to Cloudflare Pages with Direct Upload: Flutter is not in Cloudflare's build
+# image, so the build runs here. Owner setup: docs/deployment.md.
+#
+# Everything passed to the build is public client configuration and comes from
+# repository variables. Only the Cloudflare credentials are secrets.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'packages/**'
+      - 'tool/gen_firebase_sw.sh'
+      - '.github/workflows/deploy-web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+env:
+  CF_PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT || 'wyrd-app' }}
+
+jobs:
+  preflight:
+    name: Check Cloudflare credentials
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::notice title=Web deploy skipped::CLOUDFLARE_API_TOKEN is not set, so nothing was deployed. Run tool/setup_production.sh (see docs/deployment.md) to deploy to Cloudflare Pages."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error title=CLOUDFLARE_ACCOUNT_ID missing::CLOUDFLARE_API_TOKEN is set but CLOUDFLARE_ACCOUNT_ID is not. Add it as a repository secret (docs/deployment.md)."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Build and deploy
+    needs: preflight
+    if: needs.preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+      FIREBASE_API_KEY: ${{ vars.FIREBASE_API_KEY }}
+      FIREBASE_APP_ID_WEB: ${{ vars.FIREBASE_APP_ID_WEB }}
+      FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+      FIREBASE_VAPID_KEY: ${{ vars.FIREBASE_VAPID_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check configuration
+        env:
+          SITE_URL_VARIABLE: ${{ vars.WYRD_SITE_URL }}
+          GOOGLE_SIGN_IN: ${{ vars.WYRD_AUTH_GOOGLE }}
+          GOOGLE_CLIENT_ID: ${{ vars.WYRD_GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.WYRD_GOOGLE_CLIENT_SECRET }}
+          GH_SIGN_IN: ${{ vars.WYRD_AUTH_GITHUB }}
+          GH_CLIENT_ID: ${{ vars.WYRD_GITHUB_CLIENT_ID }}
+          GH_CLIENT_SECRET: ${{ secrets.WYRD_GITHUB_CLIENT_SECRET }}
+        run: |
+          if ! [[ "$CF_PAGES_PROJECT" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "::error title=Invalid CF_PAGES_PROJECT::'$CF_PAGES_PROJECT' is not a valid Pages project name (lowercase letters, digits and dashes)."
+            exit 1
+          fi
+          # One place decides the public address: the WYRD_SITE_URL variable.
+          site_url="${SITE_URL_VARIABLE:-https://$CF_PAGES_PROJECT.pages.dev}"
+          site_url="${site_url%/}"
+          if [ -z "$SITE_URL_VARIABLE" ]; then
+            echo "::warning title=WYRD_SITE_URL not set::Building for $site_url. Set the WYRD_SITE_URL repository variable (docs/deployment.md)."
+          fi
+          echo "WYRD_SITE_URL=$site_url" >> "$GITHUB_ENV"
+          for name in SUPABASE_URL SUPABASE_PUBLISHABLE_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::warning title=$name not set::Without it the site runs in local-only guest mode. Set the $name repository variable."
+            fi
+          done
+          # Sign-in buttons appear only for providers the backend deploy switches
+          # on: the switch is true and both halves of the OAuth client exist.
+          sign_in() { # NAME SWITCH CLIENT_ID SECRET
+            local value=false
+            if [ "$2" = true ]; then
+              if [ -n "$3" ] && [ -n "$4" ]; then
+                value=true
+              else
+                echo "::warning title=$1 sign-in hidden::WYRD_AUTH_$1 is true but the WYRD_$1_CLIENT_ID variable or the WYRD_$1_CLIENT_SECRET secret is missing, so the button stays hidden."
+              fi
+            fi
+            echo "WYRD_AUTH_$1=$value" >> "$GITHUB_ENV"
+          }
+          sign_in GOOGLE "$GOOGLE_SIGN_IN" "$GOOGLE_CLIENT_ID" "$GOOGLE_CLIENT_SECRET"
+          sign_in GITHUB "$GH_SIGN_IN" "$GH_CLIENT_ID" "$GH_CLIENT_SECRET"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Generate the push service worker
+        run: |
+          if [ -f tool/gen_firebase_sw.sh ]; then
+            bash tool/gen_firebase_sw.sh
+          else
+            echo "tool/gen_firebase_sw.sh not found; building without the Firebase messaging service worker."
+          fi
+
+      - name: Build
+        working-directory: app
+        run: |
+          flutter build web --release --base-href / \
+            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
+            --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY" \
+            --dart-define=WYRD_AUTH_GOOGLE="$WYRD_AUTH_GOOGLE" \
+            --dart-define=WYRD_AUTH_GITHUB="$WYRD_AUTH_GITHUB" \
+            --dart-define=WYRD_SITE_URL="$WYRD_SITE_URL" \
+            --dart-define=FIREBASE_API_KEY="$FIREBASE_API_KEY" \
+            --dart-define=FIREBASE_APP_ID_WEB="$FIREBASE_APP_ID_WEB" \
+            --dart-define=FIREBASE_MESSAGING_SENDER_ID="$FIREBASE_MESSAGING_SENDER_ID" \
+            --dart-define=FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" \
+            --dart-define=FIREBASE_VAPID_KEY="$FIREBASE_VAPID_KEY"
+          # Cache and security headers (app/web/_headers) must ship with the site.
+          if [ ! -f build/web/_headers ]; then
+            echo "::error::build/web/_headers is missing; Cloudflare would serve the site without its headers."
+            exit 1
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Creates the Pages project on the first run; "already exists" is fine.
+          preCommands: >-
+            wrangler pages project create "$CF_PAGES_PROJECT" --production-branch=main
+            > "$RUNNER_TEMP/pages-project.log" 2>&1;
+            status=$?;
+            cat "$RUNNER_TEMP/pages-project.log";
+            [ "$status" -eq 0 ] || grep -qiE 'already exists|8000002' "$RUNNER_TEMP/pages-project.log"
+          command: pages deploy app/build/web --project-name=${{ env.CF_PAGES_PROJECT }} --branch=main --commit-dirty=true
+
+      - name: Summary
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          # Each deployment gets https://<id>.<project subdomain>; the project
+          # subdomain is not always <project>.pages.dev (taken names get a suffix).
+          host="${DEPLOYMENT_URL#https://}"
+          host="${host%%/*}"
+          project_host="${host#*.}"
+          site_host="${WYRD_SITE_URL#https://}"
+          if [[ "$project_host" == *.pages.dev && "$site_host" == *.pages.dev && "$project_host" != "$site_host" ]]; then
+            echo "::warning title=Site address differs::Cloudflare serves this project at https://$project_host, but WYRD_SITE_URL is $WYRD_SITE_URL. Set WYRD_SITE_URL to https://$project_host, then redeploy the backend and the web app."
+          fi
+          {
+            echo "### Web app deployed to Cloudflare Pages"
+            echo
+            echo "- Site: $WYRD_SITE_URL"
+            echo "- This deployment: ${DEPLOYMENT_URL:-see the deploy step log}"
+          } >> "$GITHUB_STEP_SUMMARY"

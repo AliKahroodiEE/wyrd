@@ -1,6 +1,6 @@
 <div align="center">
 
-<a href="https://alikahroodiee.github.io/wyrd/">
+<a href="https://wyrd-app.pages.dev">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark-en.webp">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-light-en.webp">
@@ -17,7 +17,9 @@ AI proposes, honest rules decide, and every reward explains itself.
 
 <br>
 
-[![Try the live demo](https://img.shields.io/badge/%E2%96%B6%20%20Try%20the%20live%20demo-C0202D?style=for-the-badge)](https://alikahroodiee.github.io/wyrd/)
+[![Open Wyrd](https://img.shields.io/badge/%E2%96%B6%20%20Open%20Wyrd-C0202D?style=for-the-badge)](https://wyrd-app.pages.dev)
+[![Android APK](https://img.shields.io/badge/Android%20APK-2B2F3A?style=for-the-badge&logo=android&logoColor=white)](https://github.com/AliKahroodiEE/wyrd/releases/latest)
+[![Try the demo](https://img.shields.io/badge/Try%20the%20demo-6B4FD8?style=for-the-badge)](https://alikahroodiee.github.io/wyrd/)
 
 [![CI](https://github.com/AliKahroodiEE/wyrd/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AliKahroodiEE/wyrd/actions/workflows/ci.yml)
 [![Web demo](https://github.com/AliKahroodiEE/wyrd/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/AliKahroodiEE/wyrd/actions/workflows/pages.yml)
@@ -27,15 +29,27 @@ AI proposes, honest rules decide, and every reward explains itself.
 ![Languages](https://img.shields.io/badge/languages-English%20%C2%B7%20Persian%20(RTL)-8B6CFF)
 [![License](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-E2B45C)](LICENSE.md)
 
-[**Features**](#features) · [**Screenshots**](#screenshots) · [**Quick start**](#quick-start) · [**How it works**](#how-it-works) · [**Docs**](docs/) · [**License**](#license)
+[**Get Wyrd**](#get-wyrd) · [**Features**](#features) · [**Screenshots**](#screenshots) · [**Quick start**](#quick-start) · [**How it works**](#how-it-works) · [**Docs**](docs/) · [**License**](#license)
 
 </div>
 
 <br>
 
 > [!TIP]
-> **No install needed.** The [live demo](https://alikahroodiee.github.io/wyrd/) runs entirely in your browser with six weeks of sample
-> history. Nothing leaves your device. It opens in your device's language and light or dark setting.
+> **Play now at [wyrd-app.pages.dev](https://wyrd-app.pages.dev):** one account on the web, Android and iPhone, with sync, guilds and
+> push notifications. Just looking? The [live demo](https://alikahroodiee.github.io/wyrd/) runs entirely in your browser with six weeks
+> of sample history, and nothing leaves your device.
+
+## Get Wyrd
+
+| On | How |
+| --- | --- |
+| **Any browser** | Open **[wyrd-app.pages.dev](https://wyrd-app.pages.dev)**. Chrome and Edge offer *Install* in the address bar. |
+| **iPhone and iPad** | Open the site in Safari, tap **Share**, then **Add to Home Screen**. Notifications work in the Home Screen app (iOS 16.4+). |
+| **Android** | Download the APK from **[Releases](https://github.com/AliKahroodiEE/wyrd/releases/latest)**, or add this repository to [Obtainium](https://obtainium.imranr.dev) for automatic updates. |
+
+One account works everywhere: sign in with an emailed code, a password, Google or GitHub, and your character follows
+you between devices. Guests can play without an account; their data stays on the device.
 
 ## Why Wyrd
 
@@ -251,7 +265,7 @@ flowchart TD
 | Backend | Supabase: Postgres with row-level security, RPCs, Edge Functions (Deno), pg_cron |
 | AI | Anthropic Messages, OpenAI Chat Completions, Google Gemini, all called directly from the device |
 | Localization | gen-l10n ARB catalogs · English and Persian · Jalali calendar via `shamsi_date` |
-| CI/CD | GitHub Actions: analysis, formatting, all test suites and the web build; demo on GitHub Pages |
+| CI/CD | GitHub Actions: analysis, formatting and every test suite; deploys the web app to Cloudflare Pages, the backend to Supabase and signed APKs to GitHub Releases; encrypted daily backups; demo on GitHub Pages |
 
 </details>
 
@@ -268,18 +282,21 @@ flowchart TD
 | Backend: schema, row-level security, sync and progression RPCs, AI functions, push | ✅ [`backend/`](backend/) |
 | Accounts, sync, server evaluation, guilds (feed, reactions, comments, challenges) | ✅ |
 | Bring your own AI: Anthropic, OpenAI, Gemini and compatible services | ✅ |
+| Sign-in with an emailed code, a password, Google or GitHub | ✅ |
+| Production on free plans: web on Cloudflare Pages, backend on Supabase, signed APK on GitHub Releases, iPhone Home Screen app | ✅ [`docs/deployment.md`](docs/deployment.md) |
 
 <details>
 <summary><b>What has been verified, and what has not</b></summary>
 <br>
 
-**Verified:** all engine, app and backend test suites; static analysis; every migration and 73
+**Verified:** all engine, app and backend test suites; static analysis; every migration and 117
 security and behaviour checks against an offline Postgres (PGlite); type-checks of every Edge
 Function; the web build exercised in a browser in English and Persian, in light and dark, at
 phone, tablet and desktop widths.
 
-**Not yet verified:** a live Supabase project, real AI and push-notification calls against
-production services, and native Android and iOS builds (they need the Android SDK and Xcode).
+**Not yet verified:** the first production deploy (the live Supabase project, real e-mail,
+Google and GitHub sign-in, AI and push calls) and the native apps on a device. CI builds the
+signed Android APK on every release tag; iOS uses the Home Screen web app.
 Persian copy needs a review by a native speaker before release.
 
 </details>
@@ -290,6 +307,7 @@ Persian copy needs a review by a native speaker before release.
 - [x] **Connected**: accounts, sync, server-side evaluation, push notifications
 - [x] **Social**: private guilds with feed, reactions, comments and challenges
 - [x] **Chronicle**: week, month and year analytics, AI-written chronicles
+- [x] **Production**: free hosting for web, backend and Android; Google and GitHub sign-in; push on every platform
 - [ ] **Motivation engine**: daily briefing, evening reflection, weekly review
 - [ ] **Public**: public guilds and moderation, premium and cosmetics
 - [ ] **Stores**: Google Play and the App Store
@@ -299,8 +317,11 @@ Persian copy needs a review by a native speaker before release.
 | You want | You host |
 | --- | --- |
 | The app on phones, everything local | Nothing |
-| The web app, in desktop and mobile browsers | Static files only: `flutter build web` to GitHub Pages, Cloudflare Pages, Netlify or Vercel. This repository [deploys its demo](.github/workflows/pages.yml) on every push to `main`. |
-| Accounts, sync across devices, guilds and push | The Supabase backend in [`backend/`](backend/), on Supabase Cloud or self-hosted |
+| The web app, in desktop and mobile browsers | Static files only: `flutter build web` to GitHub Pages, Cloudflare Pages, Netlify or Vercel. On every push to `main` this repository deploys its [demo](.github/workflows/pages.yml) to GitHub Pages, and the [production app](.github/workflows/deploy-web.yml) to Cloudflare Pages when the app changed. |
+| Accounts, sync across devices, guilds and push | The Supabase backend in [`backend/`](backend/), on Supabase Cloud or self-hosted, shipped by [`deploy-backend.yml`](.github/workflows/deploy-backend.yml) |
+
+**Run your own copy for free.** [`docs/deployment.md`](docs/deployment.md) walks through every step on free
+plans, with no credit card anywhere.
 
 **AI is optional and can cost the operator nothing.** Each user can connect their own Anthropic,
 OpenAI, Google Gemini or compatible account under *Settings → AI → Your own AI*. The key stays in

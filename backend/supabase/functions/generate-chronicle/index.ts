@@ -4,9 +4,12 @@
  *
  *   POST { "period": "week" | "month" | "year", "period_start": "YYYY-MM-DD", "force"?: true }
  *     Authorization: Bearer <user access token>      → the caller's chronicle
- *   POST { "user_id", "period", "period_start" }      → service role, one user
- *   POST { "mode": "pending", "limit"?: 20 }           → service role (pg_cron
+ *   POST { "user_id", "period", "period_start" }      → internal caller, one user
+ *   POST { "mode": "pending", "limit"?: 20 }           → internal caller (pg_cron
  *     via pg_net): drain chronicles enqueued by private.enqueue_weekly_chronicles
+ *
+ * Internal callers send a project secret key as `apikey` (see _shared/auth.ts);
+ * the function is deployed with verify_jwt = false and checks every caller.
  *
  * Facts come from public.chronicle_facts (SQL). Claude may only narrate
  * them (120–220 words, second person, user's AI language); output that is
@@ -26,7 +29,8 @@ import { authenticate } from '../_shared/auth.ts';
 import { errorResponse, HttpError, json, log, preflight, readJsonObject, requirePost, requireUuid } from '../_shared/http.ts';
 import { type ChronicleFacts, type Period, templateChronicle } from '../_shared/chronicle-template.ts';
 import { resolveLocale } from '../_shared/i18n.ts';
-import { adminClient, optionalEnv, rpc } from '../_shared/supabase.ts';
+import { internalHeaders } from '../_shared/keys.ts';
+import { adminClient, optionalEnv, rpc, serverKey } from '../_shared/supabase.ts';
 
 const DAILY_AI_CHRONICLES = 20;
 const AI_TIMEOUT_MS = 45_000;
@@ -203,12 +207,12 @@ async function generate(
 /** Best-effort push that a weekly chronicle is ready (respects all notify rules). */
 async function announce(userId: string): Promise<void> {
   const url = optionalEnv('SUPABASE_URL');
-  const key = optionalEnv('SUPABASE_SERVICE_ROLE_KEY');
+  const key = serverKey();
   if (!url || !key) return;
   try {
     await fetch(`${url.replace(/\/$/, '')}/functions/v1/notify`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      headers: internalHeaders(key, (name) => Deno.env.get(name)),
       body: JSON.stringify({ user_id: userId, category: 'weekly_summary', template_key: 'weekly_chronicle', params: {} }),
       signal: AbortSignal.timeout(5_000),
     });

@@ -1,0 +1,260 @@
+name: Deploy backend (Supabase)
+
+# Ships backend/ to the hosted Supabase project with the Supabase CLI v3:
+# migrations, the project configuration from supabase/config.toml (auth,
+# SMTP, redirect URLs, API), the Edge Functions and their optional secrets,
+# and finally the project URL and secret key in Vault, which pg_cron and the
+# notification triggers use to call the functions. Nothing is clicked in the
+# dashboard. Owner setup and the list of secrets: backend/README.md
+# ("Production").
+#
+# Without the Supabase secrets the run is skipped with a notice. GitHub
+# runners have no IPv6 and the project's direct database host is IPv6-only:
+# `supabase link` saves the session pooler URL (Supavisor, IPv4, port 5432)
+# and the database commands connect through it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Check Supabase credentials
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          missing=()
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_PROJECT_ID SUPABASE_DB_PASSWORD; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice title=Backend deploy skipped::Missing repository secrets: ${missing[*]}. Add them (tool/setup_production.sh, or Settings > Secrets and variables > Actions) and re-run; see backend/README.md."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$SUPABASE_PROJECT_ID" =~ ^[a-z]{20}$ ]]; then
+            echo "::error title=Invalid SUPABASE_PROJECT_ID::It must be the 20-letter project ref from https://supabase.com/dashboard/project/<ref>."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify (tests, migrations on PGlite, deno check)
+    needs: preflight
+    if: needs.preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run verify
+
+  deploy:
+    name: Deploy to Supabase
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: backend
+    env:
+      # Read by every supabase command: the CLI token, the database password
+      # and the project ref (the CLI treats SUPABASE_PROJECT_ID as the linked
+      # project).
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      # Values of the env(...) references in config.toml's [auth] sections.
+      # The CLI loads config.toml for every command and refuses an unresolved
+      # number or boolean, so these are always set (the booleans and the site
+      # URL in the first step). GitHub reserves the GITHUB_ prefix for secret
+      # and variable names, hence WYRD_GITHUB_CLIENT_ID / _SECRET.
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      SMTP_ADMIN_EMAIL: ${{ secrets.SMTP_ADMIN_EMAIL }}
+      SMTP_SENDER_NAME: ${{ secrets.SMTP_SENDER_NAME || 'Wyrd' }}
+      WYRD_GOOGLE_CLIENT_ID: ${{ vars.WYRD_GOOGLE_CLIENT_ID }}
+      WYRD_GOOGLE_CLIENT_SECRET: ${{ secrets.WYRD_GOOGLE_CLIENT_SECRET }}
+      WYRD_GITHUB_CLIENT_ID: ${{ vars.WYRD_GITHUB_CLIENT_ID }}
+      WYRD_GITHUB_CLIENT_SECRET: ${{ secrets.WYRD_GITHUB_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: supabase/setup-cli@v3
+        with:
+          version: 3.0.0
+
+      - name: Resolve the site URL and sign-in providers
+        env:
+          SITE_URL_VARIABLE: ${{ vars.WYRD_SITE_URL }}
+          PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT || 'wyrd-app' }}
+          GOOGLE_SIGN_IN: ${{ vars.WYRD_AUTH_GOOGLE }}
+          GH_SIGN_IN: ${{ vars.WYRD_AUTH_GITHUB }}
+        run: |
+          # The one public address (OAuth redirects, e-mail links), as in deploy-web.yml.
+          site_url="${SITE_URL_VARIABLE:-https://$PAGES_PROJECT.pages.dev}"
+          site_url="${site_url%/}"
+          if [ -z "$SITE_URL_VARIABLE" ]; then
+            echo "::warning title=WYRD_SITE_URL not set::Using $site_url. Set the WYRD_SITE_URL repository variable."
+          fi
+          if ! [[ "$site_url" =~ ^https?://[^/[:space:]]+$ ]]; then
+            echo "::error title=Invalid WYRD_SITE_URL::'$site_url' must be an origin such as https://wyrd-app.pages.dev (no path)."
+            exit 1
+          fi
+          echo "WYRD_SITE_URL=$site_url" >> "$GITHUB_ENV"
+
+          smtp=true
+          for name in SMTP_HOST SMTP_USER SMTP_PASS SMTP_ADMIN_EMAIL; do
+            [ -n "${!name}" ] || smtp=false
+          done
+          if [ "$smtp" = false ]; then
+            echo "::warning title=Custom SMTP off::Set SMTP_HOST, SMTP_USER, SMTP_PASS and SMTP_ADMIN_EMAIL. Until then Supabase's built-in mailer sends sign-in codes only to your own team, 2 an hour."
+          fi
+          if ! [[ "$SMTP_PORT" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Invalid SMTP_PORT::SMTP_PORT must be a number such as 587."
+            exit 1
+          fi
+          echo "SMTP_ENABLED=$smtp" >> "$GITHUB_ENV"
+
+          # A provider is on only when its switch is true and both halves of
+          # its OAuth client are stored (deploy-web.yml and the APK build use
+          # the same rule for the buttons).
+          google=false
+          if [ "$GOOGLE_SIGN_IN" = true ]; then
+            if [ -n "$WYRD_GOOGLE_CLIENT_ID" ] && [ -n "$WYRD_GOOGLE_CLIENT_SECRET" ]; then
+              google=true
+            else
+              echo "::warning title=Google sign-in off::WYRD_AUTH_GOOGLE is true but the WYRD_GOOGLE_CLIENT_ID variable or the WYRD_GOOGLE_CLIENT_SECRET secret is missing."
+            fi
+          fi
+          echo "WYRD_AUTH_GOOGLE=$google" >> "$GITHUB_ENV"
+
+          github=false
+          if [ "$GH_SIGN_IN" = true ]; then
+            if [ -n "$WYRD_GITHUB_CLIENT_ID" ] && [ -n "$WYRD_GITHUB_CLIENT_SECRET" ]; then
+              github=true
+            else
+              echo "::warning title=GitHub sign-in off::WYRD_AUTH_GITHUB is true but the WYRD_GITHUB_CLIENT_ID variable or the WYRD_GITHUB_CLIENT_SECRET secret is missing."
+            fi
+          fi
+          echo "WYRD_AUTH_GITHUB=$github" >> "$GITHUB_ENV"
+
+      - name: Link the project
+        # Without --skip-pooler, link stores the session pooler URL that the
+        # database commands below use from this IPv4-only runner.
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Apply migrations
+        run: supabase db push --remote --yes
+
+      - name: Push project configuration (auth, SMTP, API)
+        run: supabase config push --yes
+
+      - name: Deploy Edge Functions
+        # verify_jwt per function comes from [functions.*] in config.toml.
+        run: supabase functions deploy --use-api --yes
+
+      - name: Set Edge Function secrets
+        id: secrets
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FCM_SERVICE_ACCOUNT: ${{ secrets.FCM_SERVICE_ACCOUNT }}
+        run: |
+          umask 077
+          env_file="$RUNNER_TEMP/function-secrets.env"
+          : > "$env_file"
+          names=()
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            if [[ "$ANTHROPIC_API_KEY" =~ [[:space:]\'\"] ]]; then
+              echo "::error title=Invalid ANTHROPIC_API_KEY::The key contains spaces or quotes."
+              exit 1
+            fi
+            printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY" >> "$env_file"
+            names+=(ANTHROPIC_API_KEY)
+          fi
+          if [ -n "$FCM_SERVICE_ACCOUNT" ]; then
+            # The service-account JSON spans lines; notify also accepts it base64-encoded.
+            encoded="$(printf '%s' "$FCM_SERVICE_ACCOUNT" | base64 -w0)"
+            echo "::add-mask::$encoded"
+            printf 'FCM_SERVICE_ACCOUNT=%s\n' "$encoded" >> "$env_file"
+            names+=(FCM_SERVICE_ACCOUNT)
+          fi
+          if [ "${#names[@]}" -eq 0 ]; then
+            echo "::notice title=No function secrets::ANTHROPIC_API_KEY and FCM_SERVICE_ACCOUNT are not set: evaluations and chronicles use the built-in heuristic and templates, and push notifications are off."
+          else
+            supabase secrets set --yes --env-file "$env_file"
+          fi
+          rm -f "$env_file"
+          echo "names=${names[*]:-none}" >> "$GITHUB_OUTPUT"
+
+      - name: Store the function URL and secret key in Vault
+        id: vault
+        env:
+          # Not SUPABASE_SECRET_KEY: keep the key away from the CLI's own environment.
+          WYRD_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          if [ -z "$WYRD_SECRET_KEY" ]; then
+            echo "::warning title=Vault not updated::Add the SUPABASE_SECRET_KEY secret (a secret API key, sb_secret_...). Until then the chronicle dispatch and push notifications for reactions, comments and milestones stay off."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$WYRD_SECRET_KEY" =~ ^sb_secret_[A-Za-z0-9_-]+$ || "$WYRD_SECRET_KEY" =~ ^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+            echo "::error title=Invalid SUPABASE_SECRET_KEY::Expected a secret key (sb_secret_...), never the publishable key."
+            exit 1
+          fi
+          umask 077
+          sql="$RUNNER_TEMP/function-credentials.sql"
+          printf "select private.set_function_credentials('%s', '%s');\n" \
+            "https://$SUPABASE_PROJECT_ID.supabase.co" "$WYRD_SECRET_KEY" > "$sql"
+          supabase db query --remote --yes --file "$sql" > /dev/null
+          rm -f "$sql"
+          # Names only, never values.
+          supabase db query --remote --read-only \
+            "select name, updated_at from vault.secrets where name in ('wyrd_project_url', 'wyrd_secret_key') order by name"
+          supabase db query --remote --read-only "select jobname, schedule, active from cron.job order by jobname" ||
+            echo "::warning::Could not list the pg_cron jobs."
+          echo "status=updated" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        env:
+          SECRET_NAMES: ${{ steps.secrets.outputs.names }}
+          VAULT_STATUS: ${{ steps.vault.outputs.status }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "### Backend deploy: $JOB_STATUS"
+            echo
+            echo "- Site URL (auth redirects, e-mail links): $WYRD_SITE_URL"
+            echo "- Custom SMTP: ${SMTP_ENABLED:-unknown} · Google sign-in: ${WYRD_AUTH_GOOGLE:-unknown} · GitHub sign-in: ${WYRD_AUTH_GITHUB:-unknown}"
+            echo "- Function secrets set: ${SECRET_NAMES:-not reached}"
+            echo "- Vault (cron and notification triggers): ${VAULT_STATUS:-not reached}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,30 +1,36 @@
-# Supabase CLI configuration for LOCAL development (`supabase start` from backend/).
-# Hosted projects are configured in the dashboard / via `supabase link`; nothing
-# here is a secret. Values referenced as env(...) come from the shell or
-# backend/supabase/.env (never committed).
+# Supabase CLI (v3) configuration; run the CLI from backend/. Locally it
+# describes the stack `supabase start` runs. For the hosted project the
+# backend deploy workflow (.github/workflows/deploy-backend.yml) pushes what
+# this file declares with `supabase config push` (keys left out stay as they
+# are) and deploys the functions with the [functions.*] settings. Nothing here
+# is a secret: env(...) values come from the shell, backend/supabase/.env
+# (never committed) or the workflow's GitHub variables and secrets.
 
 project_id = "wyrd"
 
 [api]
 enabled = true
 port = 54321
-# Only `public` is exposed through PostgREST. Internal helpers live in the
+# Only `public` is exposed, and no GraphQL. Internal helpers live in the
 # `private` schema and are reachable only from SECURITY DEFINER functions.
-schemas = ["public", "graphql_public"]
+schemas = ["public"]
 extra_search_path = ["public", "extensions"]
 max_rows = 1000
+# Like the hosted project: nothing in `public` is visible to anon,
+# authenticated or service_role without a GRANT (…_data_api_grants.sql), so
+# a missing grant fails locally the way it would in production.
+auto_expose_new_tables = false
 
 [db]
 port = 54322
 shadow_port = 54320
 major_version = 17
 
+# Local pooler only. Pool sizes are left undeclared on purpose: `config push`
+# would otherwise overwrite the hosted pooler's plan defaults.
 [db.pooler]
 enabled = false
 port = 54329
-pool_mode = "transaction"
-default_pool_size = 20
-max_client_conn = 100
 
 [db.migrations]
 enabled = true
@@ -41,8 +47,9 @@ enabled = true
 port = 54323
 api_url = "http://127.0.0.1"
 
-# Captures auth e-mails (magic links, confirmations) locally: http://127.0.0.1:54324
-[inbucket]
+# Captures auth e-mails (sign-in codes, confirmations) locally:
+# http://127.0.0.1:54324. CLI v3 name of the former [inbucket].
+[local_smtp]
 enabled = true
 port = 54324
 
@@ -50,13 +57,27 @@ port = 54324
 enabled = true
 file_size_limit = "5MiB"
 
+# Sign-in: an emailed 6-digit code, email + password (confirmed and reset by
+# code), Google and GitHub. Every env(...) below comes from backend/supabase/.env
+# locally (copy backend/.env.example) and from the GitHub repository
+# variables and secrets when the deploy pushes this file; see .env.example.
 [auth]
 enabled = true
-# Web build during development; native apps use the deep link below.
-site_url = "http://localhost:3000"
+# The web app's address, from ONE place: the WYRD_SITE_URL variable
+# (https://wyrd-app.pages.dev today, http://localhost:3000 locally). Moving to
+# your own domain changes only that variable.
+site_url = "env(WYRD_SITE_URL)"
+# Where sign-in may return to. Auth already accepts every path on site_url's
+# scheme, host and port, which is what "env(WYRD_SITE_URL)/**" would say (the
+# CLI only substitutes env() that is the whole value, so it can't be written
+# here). The phone apps come back through the app.wyrd:// deep link; the
+# localhost entries let a local web build use the hosted project.
 additional_redirect_urls = [
-  "http://localhost:3000/auth/callback",
-  "io.wyrd.app://auth-callback",
+  "env(WYRD_SITE_URL)",
+  "app.wyrd://auth-callback",
+  "http://localhost:3000",
+  "http://localhost:3000/**",
+  "http://127.0.0.1:3000/**",
 ]
 jwt_expiry = 3600
 enable_refresh_token_rotation = true
@@ -65,28 +86,69 @@ enable_signup = true
 # Guest mode is local-only on the device (ADR-003); no anonymous server users.
 enable_anonymous_sign_ins = false
 enable_manual_linking = false
+# The app checks the same rules before it sends a new password.
 minimum_password_length = 8
 password_requirements = "letters_digits"
 
 [auth.rate_limit]
-email_sent = 2
+# Emails per hour for the whole project (applies with custom SMTP). Mind the
+# sender's daily cap: Brevo free 300, Gmail about 500; lower it to 4 for
+# Resend free (100 a day).
+email_sent = 30
 sign_in_sign_ups = 30
 token_refresh = 150
 token_verifications = 30
 
-# E-mail + password and magic link (OTP) sign-in.
+# Every email carries a 6-digit code ({{ .Token }} in the templates), never a
+# link: sign-in, confirming a new password account, password reset.
 [auth.email]
-enable_signup = true
+enabled = true
 double_confirm_changes = true
-# Off locally for convenience (mail goes to Inbucket anyway); ON in production.
-enable_confirmations = false
+enable_confirmations = true
 secure_password_change = true
+# One email per address per minute; the app's resend countdown matches.
 max_frequency = "1m0s"
 otp_length = 6
 otp_expiry = 3600
 
+# Your own SMTP server: Supabase's built-in sender only reaches the project's
+# team (2 an hour). Brevo free or a Gmail app password now, Resend once there
+# is a domain: only the env values change. SMTP_ENABLED=false (local) keeps
+# mail in the local inbox at http://127.0.0.1:54324; the deploy sets true.
+[auth.email.smtp]
+enabled = "env(SMTP_ENABLED)"
+host = "env(SMTP_HOST)"
+port = "env(SMTP_PORT)"
+user = "env(SMTP_USER)"
+pass = "env(SMTP_PASS)"
+admin_email = "env(SMTP_ADMIN_EMAIL)"
+sender_name = "env(SMTP_SENDER_NAME)"
+
+# English, then Persian. Paths are relative to backend/.
+# A new address's first code, from "Continue with email" or "Create account".
+[auth.email.template.confirmation]
+subject = "Your Wyrd code · کد سرنوشت‌ساز تو"
+content_path = "./supabase/templates/confirmation.html"
+
+# The sign-in code for an existing account.
+[auth.email.template.magic_link]
+subject = "Your Wyrd sign-in code · کد ورود به سرنوشت‌ساز"
+content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.recovery]
+subject = "Reset your Wyrd password · بازنشانی گذرواژه در سرنوشت‌ساز"
+content_path = "./supabase/templates/recovery.html"
+
+[auth.email.template.email_change]
+subject = "Confirm your new email · تأیید ایمیل تازه"
+content_path = "./supabase/templates/email_change.html"
+
+[auth.email.template.reauthentication]
+subject = "Confirm it's you · تأیید هویت در سرنوشت‌ساز"
+content_path = "./supabase/templates/reauthentication.html"
+
 [auth.sms]
-enable_signup = false
+enabled = false
 
 # Sign in with Apple — disabled until credentials exist. For native iOS
 # sign-in set client_id to the app bundle ID(s); for web, the Services ID and
@@ -99,14 +161,27 @@ redirect_uri = ""
 url = ""
 skip_nonce_check = false
 
-# Google sign-in — disabled until an OAuth client is configured.
+# Google: a Web application OAuth client (Google Cloud > Google Auth Platform
+# > Clients) whose authorized redirect URI is
+# https://<project-ref>.supabase.co/auth/v1/callback. WYRD_AUTH_GOOGLE=true
+# switches the provider on here and shows the button in the app builds.
 [auth.external.google]
-enabled = false
-client_id = ""
-secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
+enabled = "env(WYRD_AUTH_GOOGLE)"
+client_id = "env(WYRD_GOOGLE_CLIENT_ID)"
+secret = "env(WYRD_GOOGLE_CLIENT_SECRET)"
 redirect_uri = ""
 url = ""
 skip_nonce_check = false
+
+# GitHub: an OAuth app (github.com/settings/developers) whose callback URL is
+# the same https://<project-ref>.supabase.co/auth/v1/callback. GitHub
+# reserves names starting with GITHUB_ for Actions, hence the WYRD_ prefix.
+[auth.external.github]
+enabled = "env(WYRD_AUTH_GITHUB)"
+client_id = "env(WYRD_GITHUB_CLIENT_ID)"
+secret = "env(WYRD_GITHUB_CLIENT_SECRET)"
+redirect_uri = ""
+url = ""
 
 [edge_runtime]
 enabled = true
@@ -115,20 +190,26 @@ policy = "per_worker"
 inspector_port = 8083
 deno_version = 2
 
-# Users call this with their access token; the gateway verifies the JWT and
-# the function re-checks ownership of the completion.
+# Every function authenticates its callers in code (_shared/auth.ts): user
+# access tokens with auth.getClaims, internal callers by a project secret key
+# in the apikey header. verify_jwt adds the platform's JWT check in front;
+# secret keys are not JWTs, so functions that internal callers reach run
+# without it.
+
+# User-facing: the app calls it with the user's access token. The function
+# checks the token again and that the caller owns the completion.
 [functions.evaluate-completion]
 enabled = true
 verify_jwt = true
 
-# Users (their own chronicle) or the service role (pg_cron dispatch).
+# Users (their own chronicle) and pg_cron through pg_net (secret key as
+# apikey, …_cron_secret_key.sql).
 [functions.generate-chronicle]
 enabled = true
-verify_jwt = true
+verify_jwt = false
 
-# Internal only. Authenticated in code (service-role key or
-# INTERNAL_FUNCTION_SECRET), so Database Webhooks and internal callers that
-# do not send a user JWT are accepted by the gateway.
+# Internal only: the notification triggers (…_notify_triggers.sql) and
+# generate-chronicle send a secret key as apikey, or INTERNAL_FUNCTION_SECRET.
 [functions.notify]
 enabled = true
 verify_jwt = false

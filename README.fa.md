@@ -1,6 +1,6 @@
 <div align="center">
 
-<a href="https://alikahroodiee.github.io/wyrd/">
+<a href="https://wyrd-app.pages.dev">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark-fa.webp">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-light-fa.webp">
@@ -23,7 +23,9 @@
 
 <br>
 
-[![Try the live demo](https://img.shields.io/badge/%E2%96%B6%20%20Try%20the%20live%20demo-C0202D?style=for-the-badge)](https://alikahroodiee.github.io/wyrd/)
+[![Open Wyrd](https://img.shields.io/badge/%E2%96%B6%20%20Open%20Wyrd-C0202D?style=for-the-badge)](https://wyrd-app.pages.dev)
+[![Android APK](https://img.shields.io/badge/Android%20APK-2B2F3A?style=for-the-badge&logo=android&logoColor=white)](https://github.com/AliKahroodiEE/wyrd/releases/latest)
+[![Try the demo](https://img.shields.io/badge/Try%20the%20demo-6B4FD8?style=for-the-badge)](https://alikahroodiee.github.io/wyrd/)
 
 [![CI](https://github.com/AliKahroodiEE/wyrd/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AliKahroodiEE/wyrd/actions/workflows/ci.yml)
 [![Web demo](https://github.com/AliKahroodiEE/wyrd/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/AliKahroodiEE/wyrd/actions/workflows/pages.yml)
@@ -33,14 +35,26 @@
 ![Languages](https://img.shields.io/badge/languages-English%20%C2%B7%20Persian%20(RTL)-8B6CFF)
 [![License](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-E2B45C)](LICENSE.md)
 
-[**ویژگی‌ها**](#features) · [**تصاویر**](#screenshots) · [**شروع سریع**](#quick-start) · [**چطور کار می‌کند**](#how-it-works) · [**مستندات**](docs/) · [**مجوز**](#license)
+[**دریافت**](#get-wyrd) · [**ویژگی‌ها**](#features) · [**تصاویر**](#screenshots) · [**شروع سریع**](#quick-start) · [**چطور کار می‌کند**](#how-it-works) · [**مستندات**](docs/) · [**مجوز**](#license)
 
 </div>
 
 <br>
 
-> 💡 **نیازی به نصب نیست.** [نسخه‌ی نمایشی زنده](https://alikahroodiee.github.io/wyrd/) کاملاً در مرورگرت اجرا می‌شود و شش هفته سابقه‌ی نمونه دارد.
-> هیچ داده‌ای از دستگاهت بیرون نمی‌رود. به زبان دستگاهت و با حالت روشن یا تیره‌ی آن باز می‌شود.
+> 💡 **همین حالا در [wyrd-app.pages.dev](https://wyrd-app.pages.dev) بازی کن:** یک حساب برای وب، اندروید و آیفون، با همگام‌سازی،
+> انجمن‌ها و اعلان‌ها. فقط می‌خواهی نگاهی بیندازی؟ [نسخه‌ی نمایشی زنده](https://alikahroodiee.github.io/wyrd/) کاملاً در مرورگرت اجرا
+> می‌شود و شش هفته سابقه‌ی نمونه دارد؛ هیچ داده‌ای از دستگاهت بیرون نمی‌رود.
+
+## <a id="get-wyrd"></a>دریافت سرنوشت‌ساز
+
+| کجا | چطور |
+| --- | --- |
+| **هر مرورگری** | **[wyrd-app.pages.dev](https://wyrd-app.pages.dev)** را باز کن. Chrome و Edge در نوار نشانی گزینه‌ی *Install* را نشان می‌دهند. |
+| **آیفون و آیپد** | سایت را در Safari باز کن، **Share** و بعد **Add to Home Screen** را بزن. اعلان‌ها در برنامه‌ی صفحه‌ی اصلی کار می‌کنند (iOS 16.4 به بعد). |
+| **اندروید** | فایل APK را از **[Releases](https://github.com/AliKahroodiEE/wyrd/releases/latest)** بگیر، یا این مخزن را به [Obtainium](https://obtainium.imranr.dev) اضافه کن تا به‌روزرسانی‌ها خودکار برسند. |
+
+یک حساب همه‌جا کار می‌کند: با کدی که ایمیل می‌شود، رمز عبور، گوگل یا گیت‌هاب وارد شو تا شخصیتت با تو از دستگاهی
+به دستگاه دیگر بیاید. بدون حساب هم می‌شود بازی کرد؛ آن‌وقت داده‌ها روی همان دستگاه می‌مانند.
 
 ## <a id="why"></a>چرا سرنوشت‌ساز
 
@@ -265,7 +279,7 @@ flowchart TD
 | سرور | Supabase: پستگرس با امنیت در سطح سطر، RPCها، Edge Functions (Deno)، pg_cron |
 | هوش مصنوعی | Anthropic Messages، OpenAI Chat Completions، Google Gemini؛ همه مستقیم از خودِ دستگاه |
 | بومی‌سازی | کاتالوگ‌های ARB با gen-l10n · فارسی و انگلیسی · تقویم جلالی با `shamsi_date` |
-| CI/CD | GitHub Actions: تحلیل، قالب‌بندی، همه‌ی آزمون‌ها و ساخت وب؛ نسخه‌ی نمایشی روی GitHub Pages |
+| CI/CD | GitHub Actions: تحلیل، قالب‌بندی و همه‌ی آزمون‌ها؛ استقرار وب روی Cloudflare Pages، سرور روی Supabase و APKهای امضاشده در GitHub Releases؛ پشتیبان رمزنگاری‌شده‌ی روزانه؛ نسخه‌ی نمایشی روی GitHub Pages |
 
 </details>
 
@@ -282,17 +296,20 @@ flowchart TD
 | سرور: طرح‌واره، امنیت در سطح سطر، RPCهای همگام‌سازی و پیشرفت، توابع هوش مصنوعی، اعلان | ✅ [`backend`](backend/) |
 | حساب کاربری، همگام‌سازی، ارزیابی روی سرور، انجمن‌ها (تالار، واکنش، نظر، چالش) | ✅ |
 | هوش مصنوعی خودت: Anthropic، OpenAI، Gemini و سرویس‌های سازگار | ✅ |
+| ورود با کد ایمیلی، رمز عبور، گوگل یا گیت‌هاب | ✅ |
+| محیط عملیاتی با پلن‌های رایگان: وب روی Cloudflare Pages، سرور روی Supabase، APK امضاشده در GitHub Releases، برنامه‌ی صفحه‌ی اصلی آیفون | ✅ [`docs/deployment.fa.md`](docs/deployment.fa.md) |
 
 <details>
 <summary><b>چه چیزهایی آزموده شده و چه چیزهایی نه</b></summary>
 <br>
 
-**آزموده شده:** همه‌ی آزمون‌های موتور، برنامه و سرور؛ تحلیل ایستا؛ همه‌ی مهاجرت‌ها و ۷۳ بررسی امنیتی و
+**آزموده شده:** همه‌ی آزمون‌های موتور، برنامه و سرور؛ تحلیل ایستا؛ همه‌ی مهاجرت‌ها و ۱۱۷ بررسی امنیتی و
 رفتاری روی PGlite، یک پستگرسِ آفلاین؛ بررسی نوعِ همه‌ی Edge Functionها؛ اجرای نسخه‌ی وب در مرورگر به
 فارسی و انگلیسی، در روشن و تیره، در عرض گوشی، تبلت و دسکتاپ.
 
-**هنوز آزموده نشده:** یک پروژه‌ی زنده‌ی Supabase، فراخوانی واقعیِ سرویس‌های هوش مصنوعی و اعلان در
-محیط عملیاتی، و ساخت بومیِ اندروید و iOS، که به Android SDK و Xcode نیاز دارند. متن فارسی پیش از
+**هنوز آزموده نشده:** نخستین استقرار عملیاتی (پروژه‌ی زنده‌ی Supabase، ایمیل واقعی، ورود با گوگل و گیت‌هاب،
+فراخوانی هوش مصنوعی و اعلان) و برنامه‌های بومی روی دستگاه واقعی. CI با هر تگ انتشار، APK امضاشده‌ی اندروید
+را می‌سازد؛ iOS از برنامه‌ی وبِ صفحه‌ی اصلی استفاده می‌کند. متن فارسی پیش از
 انتشار باید به دست یک ویراستارِ فارسی‌زبان بازبینی شود.
 
 </details>
@@ -303,6 +320,7 @@ flowchart TD
 - [x] **متصل**: حساب کاربری، همگام‌سازی، ارزیابی روی سرور، اعلان‌ها
 - [x] **اجتماعی**: انجمن‌های خصوصی با تالار، واکنش، نظر و چالش
 - [x] **وقایع‌نامه**: تحلیل هفتگی، ماهانه و سالانه، وقایع‌نامه‌هایی به قلم هوش مصنوعی
+- [x] **عملیاتی**: میزبانی رایگان برای وب، سرور و اندروید؛ ورود با گوگل و گیت‌هاب؛ اعلان روی همه‌ی سکوها
 - [ ] **موتور انگیزه**: گزارش صبحگاهی، بازتاب شبانه، مرور هفتگی
 - [ ] **عمومی**: انجمن‌های عمومی و نظارت، نسخه‌ی ویژه و آرایه‌ها
 - [ ] **فروشگاه‌ها**: Google Play و App Store
@@ -312,8 +330,11 @@ flowchart TD
 | چه می‌خواهی | چه چیزی را میزبانی می‌کنی |
 | --- | --- |
 | برنامه روی گوشی، همه‌چیز محلی | هیچ |
-| نسخه‌ی وب، در مرورگرهای دسکتاپ و موبایل | فقط فایل‌های ایستا: `flutter build web` روی GitHub Pages، Cloudflare Pages، Netlify یا Vercel. این مخزن [نسخه‌ی نمایشی‌اش را](.github/workflows/pages.yml) با هر push به `main` منتشر می‌کند. |
-| حساب کاربری، همگام‌سازی بین دستگاه‌ها، انجمن‌ها و اعلان | سرورِ Supabase در [`backend`](backend/)، روی Supabase Cloud یا میزبانی شخصی |
+| نسخه‌ی وب، در مرورگرهای دسکتاپ و موبایل | فقط فایل‌های ایستا: `flutter build web` روی GitHub Pages، Cloudflare Pages، Netlify یا Vercel. این مخزن با هر push به `main` [نسخه‌ی نمایشی](.github/workflows/pages.yml) را روی GitHub Pages منتشر می‌کند، و اگر برنامه تغییر کرده باشد [نسخه‌ی عملیاتی](.github/workflows/deploy-web.yml) را روی Cloudflare Pages. |
+| حساب کاربری، همگام‌سازی بین دستگاه‌ها، انجمن‌ها و اعلان | سرورِ Supabase در [`backend`](backend/)، روی Supabase Cloud یا میزبانی شخصی، که [`deploy-backend.yml`](.github/workflows/deploy-backend.yml) منتشرش می‌کند |
+
+**نسخه‌ی خودت را رایگان راه بینداز.** [`docs/deployment.fa.md`](docs/deployment.fa.md) همه‌ی مرحله‌ها را با پلن‌های
+رایگان و بدون نیاز به هیچ کارت بانکی توضیح می‌دهد.
 
 **هوش مصنوعی اختیاری است و می‌تواند هیچ هزینه‌ای برای گرداننده نداشته باشد.** هر کاربر می‌تواند حساب
 Anthropic، OpenAI، Google Gemini یا سرویس سازگارِ خودش را در *تنظیمات ← هوش مصنوعی ← هوش مصنوعی خودت*

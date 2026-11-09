@@ -1,11 +1,17 @@
-import 'package:drift/drift.dart' show DatabaseConnection;
+import 'dart:async';
+import 'dart:ui' show Locale;
+
+import 'package:drift/drift.dart' show DatabaseConnection, Value;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:wyrd/core/locale/regional_settings.dart';
 import 'package:wyrd/data/db/database.dart';
 import 'package:wyrd/data/models.dart';
 import 'package:wyrd/data/remote/remote_api.dart';
 import 'package:wyrd/data/repositories/progression_repository.dart';
 import 'package:wyrd/data/repositories/quest_repository.dart';
+import 'package:wyrd/data/repositories/settings_repository.dart';
+import 'package:wyrd/data/sync/sync_coordinator.dart';
 import 'package:wyrd/data/sync/sync_service.dart';
 import 'package:wyrd_engine/wyrd_engine.dart';
 
@@ -14,23 +20,90 @@ class FakeApi implements RemoteApi {
   Map<String, Object?> pullResponse = {'cursor': 0, 'has_more': false, 'changes': <String, Object?>{}};
   Map<String, Object?>? evaluation;
   bool failRetryable = false;
+
+  /// Changes from this position in a batch on come back retryable.
+  int? retryableFrom;
+
+  /// Ids the server keeps its own, newer version of ('ignored').
+  final ignored = <String>{};
+
+  /// Ids the server refuses for now, every time ('retryable'). Undos are
+  /// answered as below.
+  final refusedForNow = <String>{};
+
+  /// Ids the server refuses for good ('invalid', not retryable). Undos are
+  /// answered as below.
+  final refusedForGood = <String>{};
+
+  /// Completions the server has: each one it takes adds its id. Like
+  /// undo_completion_internal, it answers an undo of any other completion
+  /// 'missing_reference', retryable; [ignored] means it was already undone.
+  final completions = <String>{};
+
+  /// Every change sent, whatever the answer.
+  final sent = <Map<String, Object?>>[];
+
+  /// A connection on which a page of more rows than this times out.
+  int? timeoutAbove;
+
+  /// The page size of every pull, null for the server's default.
+  final askedMaxRows = <int?>[];
+  var evaluateCalls = 0;
+  var pushCalls = 0;
+  var pullCalls = 0;
+
+  /// The cursor of every pull, in order.
+  final pulledFrom = <int>[];
+
+  /// Holds a pull until it completes.
+  Future<void>? pullGate;
   final profiles = <Map<String, Object?>>[];
 
   @override
   Future<List<Map<String, Object?>>> push(List<Map<String, Object?>> changes) async {
+    pushCalls++;
+    sent.addAll(changes);
     if (failRetryable) {
       return [
         for (final c in changes) {'id': c['id'], 'status': 'rejected', 'retryable': true},
       ];
     }
-    pushed.addAll(changes);
-    return [
-      for (final c in changes) {'id': c['id'], 'status': 'applied'},
-    ];
+    final from = retryableFrom ?? changes.length;
+    return [for (var i = 0; i < changes.length; i++) _answer(changes[i], waits: i >= from)];
   }
 
+  /// One change, in order: what the server takes counts for the changes
+  /// after it in the same batch.
+  Map<String, Object?> _answer(Map<String, Object?> change, {required bool waits}) {
+    final id = change['id'];
+    final undo = change['entity'] == 'completion' && change['op'] == 'undo';
+    Map<String, Object?> refused(String reason, {bool retryable = false}) => {
+      'id': id,
+      'status': 'rejected',
+      'reason': reason,
+      if (retryable) 'retryable': true,
+    };
+    if (waits || (!undo && refusedForNow.contains(id))) return refused('missing_reference', retryable: true);
+    if (!undo && refusedForGood.contains(id)) return refused('invalid');
+    if (undo && !completions.contains(id)) return refused('missing_reference', retryable: true);
+    pushed.add(change);
+    if (change['entity'] == 'completion' && change['op'] == 'insert') completions.add(id! as String);
+    return {'id': id, 'status': ignored.contains(id) ? 'ignored' : 'applied'};
+  }
+
+  /// Like the server: only what changed after [cursor].
   @override
-  Future<Map<String, Object?>> pull(int cursor) async => pullResponse;
+  Future<Map<String, Object?>> pull(int cursor, {int? maxRows}) async {
+    pullCalls++;
+    pulledFrom.add(cursor);
+    askedMaxRows.add(maxRows);
+    final limit = timeoutAbove;
+    if (limit != null && (maxRows ?? 1000) > limit) throw TimeoutException('too slow');
+    if (pullGate != null) await pullGate;
+    final next = (pullResponse['cursor']! as num).toInt();
+    if (cursor >= next) return {'cursor': cursor, 'has_more': false, 'changes': <String, Object?>{}};
+    return pullResponse;
+  }
 
   Map<String, Object?>? lastClientProposal;
   String? lastClientModel;
@@ -41,6 +114,7 @@ class FakeApi implements RemoteApi {
     Map<String, Object?>? clientProposal,
     String? clientModel,
   }) async {
+    evaluateCalls++;
     lastClientProposal = clientProposal;
     lastClientModel = clientModel;
     return evaluation;
@@ -48,6 +122,57 @@ class FakeApi implements RemoteApi {
 
   @override
   Future<void> updateProfile(Map<String, Object?> fields) async => profiles.add(fields);
+
+  final notificationPrefs = <Map<String, Object?>>[];
+
+  @override
+  Future<void> updateNotificationPrefs(Map<String, Object?> prefs) async => notificationPrefs.add(prefs);
+}
+
+/// Pages like sync_pull: the rows after the cursor in change_id order,
+/// [pageSize] a page, plus the quest of every subtask and completion in a
+/// page even when that quest's change_id lies beyond the page's cursor (it
+/// comes again in its own page).
+class PagingApi extends FakeApi {
+  PagingApi(this.rows, {this.pageSize = 3});
+
+  /// The server's rows, each with the table it is pulled from.
+  final List<(String, Map<String, Object?>)> rows;
+  final int pageSize;
+
+  /// Every page as it was served.
+  final pages = <Map<String, Object?>>[];
+
+  /// Runs before the page after [cursor] is served.
+  Future<void> Function(int cursor)? beforePage;
+
+  @override
+  Future<Map<String, Object?>> pull(int cursor, {int? maxRows}) async {
+    pullCalls++;
+    pulledFrom.add(cursor);
+    await beforePage?.call(cursor);
+    int changeId(Map<String, Object?> row) => row['change_id']! as int;
+    final after = [
+      for (final r in rows)
+        if (changeId(r.$2) > cursor) r,
+    ]..sort((a, b) => changeId(a.$2).compareTo(changeId(b.$2)));
+    final page = after.take(pageSize).toList();
+    final next = page.isEmpty ? cursor : changeId(page.last.$2);
+    final parents = {
+      for (final (table, row) in page)
+        if (table == 'subtasks' || table == 'completions') row['quest_id'],
+    };
+    final changes = <String, List<Map<String, Object?>>>{};
+    for (final (table, row) in page) {
+      (changes[table] ??= []).add(row);
+    }
+    for (final (table, row) in rows) {
+      if (table == 'quests' && changeId(row) > next && parents.contains(row['id'])) (changes['quests'] ??= []).add(row);
+    }
+    final res = {'cursor': next, 'has_more': after.length > pageSize, 'changes': changes};
+    pages.add(res);
+    return res;
+  }
 }
 
 Map<String, Object?> serverResult(int discipline) => {
@@ -100,7 +225,7 @@ void main() {
 
     final report = await sync.syncOnce();
 
-    expect(report.pushed, 2);
+    expect(report.pushed, 3, reason: 'the quest, its completion and that the quest is done');
     final quest = api.pushed.firstWhere((c) => c['entity'] == 'quest');
     final payload = quest['payload']! as Map<String, Object?>;
     expect(payload['share_level'], 'title_only');
@@ -182,13 +307,1017 @@ void main() {
     expect(await progression.attributeTotals(), {Attribute.discipline: 11});
   });
 
-  test('pushes the profile only when it changes', () async {
-    const profile = {'locale': 'fa', 'ai_locale': 'fa', 'ai_evaluation_enabled': false};
-    await sync.syncOnce(profile: profile);
-    await sync.syncOnce(profile: profile);
+  test('a settings group is sent only when it changes', () async {
+    var value = <String, Object?>{'locale': 'fa', 'ai_evaluation_enabled': false};
+    final group = SyncedSettings(key: 'sync_test', current: () async => value, send: (v) async => api.profiles.add(v));
+    await sync.syncOnce(settings: [group]);
+    await sync.syncOnce(settings: [group]);
     expect(api.profiles, hasLength(1));
-    await sync.syncOnce(profile: {...profile, 'ai_evaluation_enabled': true});
+    value = {...value, 'ai_evaluation_enabled': true};
+    await sync.syncOnce(settings: [group]);
     expect(api.profiles, hasLength(2));
+  });
+
+  test('a settings group that fails does not hold up the outbox', () async {
+    await quests.create(const QuestDraft(title: 'Read'));
+    final report = await sync.syncOnce(
+      settings: [
+        SyncedSettings(
+          key: 'sync_test',
+          current: () async => {'a': 1},
+          send: (_) async => throw StateError('function set_notification_prefs does not exist'),
+        ),
+      ],
+    );
+    expect(report.settingsFailed, 1);
+    expect(report.pushed, 1);
+    expect(await db.select(db.outboxEntries).get(), isEmpty);
+  });
+
+  test('completions applied before a retryable failure still get evaluated', () async {
+    final q = await quests.create(const QuestDraft(title: 'Write report'));
+    await progression.complete(q, provisional: true);
+    await quests.create(const QuestDraft(title: 'Read'));
+    api.retryableFrom = 2; // quest and completion go through, what follows them waits
+    await sync.syncOnce();
+    expect(await db.select(db.outboxEntries).get(), hasLength(2));
+    api
+      ..retryableFrom = null
+      ..evaluation = {'result': serverResult(5), 'proposal': serverProposal()};
+    final next = await sync.syncOnce();
+    expect(next.evaluated, 1);
+    expect(await progression.attributeTotals(), {Attribute.discipline: 5});
+  });
+
+  group('the device belongs to one account', () {
+    Future<List<KeyValueRow>> key(String name) => (db.select(db.keyValues)..where((k) => k.key.equals(name))).get();
+
+    test('guest data joins the first account that signs in', () async {
+      await quests.create(const QuestDraft(title: 'Made as a guest'));
+      expect(await sync.claimFor('user-a'), isFalse);
+      expect(await sync.claimFor('user-a'), isFalse);
+      expect(await db.select(db.quests).get(), hasLength(1));
+      expect(await db.select(db.outboxEntries).get(), hasLength(1));
+    });
+
+    test('another account\'s data is wiped before a new account syncs', () async {
+      await sync.claimFor('user-a');
+      await quests.create(const QuestDraft(title: 'A\'s quest'));
+      api.pullResponse = {'cursor': 900, 'has_more': false, 'changes': <String, Object?>{}};
+      await sync.syncOnce();
+      await quests.create(const QuestDraft(title: 'A\'s unsynced quest'));
+      expect(await key('sync_cursor'), isNotEmpty);
+
+      expect(await sync.claimFor('user-b'), isTrue);
+      expect(await db.select(db.quests).get(), isEmpty);
+      expect(await db.select(db.outboxEntries).get(), isEmpty, reason: 'never uploaded into B');
+      expect(await key('sync_cursor'), isEmpty, reason: 'B downloads its own history from the start');
+      expect(await sync.claimFor('user-b'), isFalse);
+    });
+  });
+
+  test('a stop while a page downloads keeps it off the device', () async {
+    final gate = Completer<void>();
+    api
+      ..pullGate = gate.future
+      ..pullResponse = {
+        'cursor': 7,
+        'has_more': false,
+        'changes': {
+          'quests': [
+            {
+              'id': '018f0000-0000-7000-8000-000000000009',
+              'tier': 'daily',
+              'title': 'Arrives late',
+              'created_at': '2026-11-04T05:00:00Z',
+              'updated_at': '2026-11-04T05:00:00Z',
+            },
+          ],
+        },
+      };
+    final cycle = sync.syncOnce();
+    await pumpEventQueue();
+    sync.stop();
+    gate.complete();
+    await expectLater(cycle, throwsA(isA<SyncStopped>()));
+    expect(await db.select(db.quests).get(), isEmpty);
+    expect(await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).get(), isEmpty);
+    await expectLater(sync.syncOnce(), throwsA(isA<SyncStopped>()));
+  });
+
+  group('offline edits against newer ones elsewhere', () {
+    const id = '018f0000-0000-7000-8000-0000000000aa';
+    Map<String, Object?> serverRow(String title, int changeId) => {
+      'id': id,
+      'tier': 'daily',
+      'title': title,
+      'change_id': changeId,
+      'created_at': '2026-11-04T05:00:00Z',
+      'updated_at': '2026-11-04T10:00:00Z',
+    };
+
+    Future<void> editHere() async {
+      await quests.create(const QuestDraft(title: 'X'));
+      final local = await db.select(db.quests).getSingle();
+      await (db.update(db.quests)..where((q) => q.id.equals(local.id))).write(const QuestsCompanion(id: Value(id)));
+      await (db.update(db.outboxEntries)).write(const OutboxEntriesCompanion(entityId: Value(id)));
+    }
+
+    test('the server\'s newer version wins: changes go up before the pull', () async {
+      await editHere();
+      api
+        ..ignored.add(id) // the web renamed it later
+        ..pullResponse = {
+          'cursor': 10,
+          'has_more': false,
+          'changes': {
+            'quests': [serverRow('Y', 10)],
+          },
+        };
+      await sync.syncOnce();
+      expect((await quests.byId(id))!.title, 'Y');
+      expect(await db.select(db.outboxEntries).get(), isEmpty);
+    });
+
+    test('a row still waiting to go up holds the cursor until it has', () async {
+      await editHere();
+      api
+        ..failRetryable = true
+        ..pullResponse = {
+          'cursor': 10,
+          'has_more': false,
+          'changes': {
+            'quests': [serverRow('Y', 10)],
+          },
+        };
+      await sync.syncOnce();
+      expect((await quests.byId(id))!.title, 'X', reason: 'still waiting to go up');
+      final cursor = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).getSingle();
+      expect(cursor.value, '9', reason: 'not past the row it skipped');
+
+      api
+        ..failRetryable = false
+        ..ignored.add(id);
+      await sync.syncOnce();
+      expect((await quests.byId(id))!.title, 'Y', reason: 'fetched again once the edit went up');
+    });
+
+    group('a row dropped after three refusals', () {
+      const other = '018f0000-0000-7000-8000-0000000000ab';
+      const completion = '018f0000-0000-7000-8000-0000000000c2';
+
+      Future<int?> cursor() async {
+        final row = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).getSingleOrNull();
+        return row == null ? null : int.parse(row.value);
+      }
+
+      Future<int> ledgerRows() async => (await db.select(db.ledgerEntries).get()).length;
+
+      /// The change waiting for the row is refused three times; then another
+      /// device's newer version arrives with later rows. It no longer holds
+      /// the cursor, so it is dropped and the cursor moves past it.
+      Future<void> dropIt() async {
+        api.refusedForNow.add(id);
+        for (var i = 0; i < 3; i++) {
+          await sync.syncOnce();
+        }
+        api.pullResponse = {
+          'cursor': 20,
+          'has_more': false,
+          'changes': {
+            'quests': [
+              serverRow('Y', 18),
+              {...serverRow('Made elsewhere', 19), 'id': other},
+            ],
+            'completions': [
+              {
+                'id': completion,
+                'quest_id': other,
+                'occurrence_day': '2026-11-04',
+                'completed_at': '2026-11-04T06:00:00Z',
+                'state': 'active',
+                'result': serverResult(11),
+                'change_id': 20,
+              },
+            ],
+            'evaluations': [
+              {'completion_id': completion, 'proposal': serverProposal()},
+            ],
+          },
+        };
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, isNot('Y'), reason: 'dropped');
+        expect(await quests.byId(other), isNotNull);
+        expect(await cursor(), 20);
+      }
+
+      test('comes down once the server keeps its own version', () async {
+        await editHere();
+        await dropIt();
+        final ledger = await ledgerRows();
+        api
+          ..refusedForNow.remove(id)
+          ..ignored.add(id);
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, 'Y');
+        expect(await db.select(db.outboxEntries).get(), isEmpty);
+        expect(await cursor(), 20);
+        // The later rows came again and changed nothing.
+        expect(api.pulledFrom.last, 17);
+        expect(await ledgerRows(), ledger);
+        expect(await db.select(db.evaluations).get(), hasLength(1));
+        expect(await progression.attributeTotals(), {Attribute.discipline: 11});
+      });
+
+      test('comes down once the server refuses the change for good', () async {
+        await editHere();
+        await dropIt();
+        api
+          ..refusedForNow.remove(id)
+          ..refusedForGood.add(id);
+        final report = await sync.syncOnce();
+        expect(report.rejected, 1);
+        expect((await quests.byId(id))!.title, 'Y');
+      });
+
+      test('is not fetched again when the server took the change', () async {
+        await editHere();
+        await dropIt();
+        api.refusedForNow.remove(id);
+        await sync.syncOnce(); // applied: the merged row comes with a new change_id
+        expect(api.pulledFrom.last, 20, reason: 'no step back');
+        final note = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_dropped'))).getSingle();
+        expect(note.value, '{}');
+      });
+
+      test('waits for the last change still waiting for the row', () async {
+        await editHere();
+        await quests.update(id, const QuestDraft(title: 'X2'));
+        await dropIt();
+        api
+          ..refusedForNow.remove(id)
+          ..ignored.add(id)
+          ..retryableFrom = 1; // the first change is answered, the second still waits
+        await sync.syncOnce();
+        expect(await db.select(db.outboxEntries).get(), hasLength(1));
+        expect((await quests.byId(id))!.title, 'X2', reason: 'its own change still has to go up');
+        expect(api.pulledFrom.last, 20);
+
+        api.retryableFrom = null;
+        await sync.syncOnce();
+        expect((await quests.byId(id))!.title, 'Y');
+      });
+    });
+  });
+
+  group('a page that carries a child\'s quest before the quest\'s own page', () {
+    const subtask = '018f0000-0000-7000-8000-0000000000d1';
+    const first = '018f0000-0000-7000-8000-0000000000d2';
+    const other = '018f0000-0000-7000-8000-0000000000d3';
+    const second = '018f0000-0000-7000-8000-0000000000d4';
+
+    /// A quest completed for a while and edited since (change_id 9), so its
+    /// subtask and completion lie in the first page and the quest in the
+    /// last; another quest with its completion fills the page between.
+    List<(String, Map<String, Object?>)> history(String quest) => [
+      (
+        'subtasks',
+        {
+          'id': subtask,
+          'quest_id': quest,
+          'title': 'Chapter 1',
+          'done': true,
+          'position': 0,
+          'updated_at': '2026-11-01T05:00:00Z',
+          'change_id': 2,
+        },
+      ),
+      (
+        'completions',
+        {
+          'id': first,
+          'quest_id': quest,
+          'occurrence_day': '2026-11-01',
+          'local_day': '2026-11-01',
+          'completed_at': '2026-11-01T06:00:00Z',
+          'state': 'active',
+          'result': serverResult(5),
+          'change_id': 3,
+        },
+      ),
+      ('evaluations', {'completion_id': first, 'proposal': serverProposal(), 'change_id': 4}),
+      (
+        'quests',
+        {
+          'id': other,
+          'tier': 'daily',
+          'title': 'Other',
+          'created_at': '2026-11-01T05:00:00Z',
+          'updated_at': '2026-11-01T05:00:00Z',
+          'change_id': 5,
+        },
+      ),
+      (
+        'completions',
+        {
+          'id': second,
+          'quest_id': other,
+          'occurrence_day': '2026-11-02',
+          'local_day': '2026-11-02',
+          'completed_at': '2026-11-02T06:00:00Z',
+          'state': 'active',
+          'result': serverResult(3),
+          'change_id': 6,
+        },
+      ),
+      ('day_stats', {'local_day': '2026-11-02', 'change_id': 7}),
+      (
+        'quests',
+        {
+          'id': quest,
+          'tier': 'daily',
+          'title': 'Read (edited elsewhere)',
+          'recurrence': {'kind': 'daily'},
+          'created_at': '2026-10-01T05:00:00Z',
+          'updated_at': '2026-11-03T05:00:00Z',
+          'change_id': 9,
+        },
+      ),
+    ];
+
+    Future<int?> cursor() async {
+      final row = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).getSingleOrNull();
+      return row == null ? null : int.parse(row.value);
+    }
+
+    Future<List<List<Object>>> snapshot() async => [
+      await db.select(db.quests).get(),
+      await db.select(db.subtasks).get(),
+      await db.select(db.completions).get(),
+      await db.select(db.evaluations).get(),
+      await db.select(db.ledgerEntries).get(),
+    ];
+
+    test('a new device gets the children with their quest, and the quest again changes nothing', () async {
+      const quest = '018f0000-0000-7000-8000-0000000000d0';
+      final server = PagingApi(history(quest));
+      final paged = SyncService(db, server, progression);
+      List<List<Object>>? beforeAgain;
+      server.beforePage = (from) async {
+        if (from == 7) beforeAgain = await snapshot(); // the quest's own page comes next
+      };
+
+      await paged.syncOnce();
+
+      final firstPage = server.pages.first['changes']! as Map<String, List<Map<String, Object?>>>;
+      expect(firstPage['quests']!.map((q) => q['id']), [quest], reason: 'delivered with its children');
+      expect(server.pulledFrom, [0, 4, 7], reason: 'each page continues from the page\'s cursor');
+      expect(await cursor(), 9);
+      expect((await quests.byId(quest))!.title, 'Read (edited elsewhere)');
+      expect((await db.select(db.subtasks).getSingle()).questId, quest);
+      expect((await db.select(db.completions).get()).map((c) => c.questId).toSet(), {quest, other});
+      expect(await progression.attributeTotals(), {Attribute.discipline: 8});
+      expect(await snapshot(), beforeAgain, reason: 'the quest\'s own page changed nothing');
+
+      await paged.syncOnce();
+      expect(server.pulledFrom.last, 9);
+      expect(await db.select(db.evaluations).get(), hasLength(2));
+      expect(await db.select(db.ledgerEntries).get(), hasLength(2));
+    });
+
+    test('a quest with a change waiting here is left alone and holds the cursor only in its own page', () async {
+      final mine = await quests.create(const QuestDraft(title: 'Read'));
+      final server = PagingApi(history(mine.id))..refusedForNow.add(mine.id);
+      final paged = SyncService(db, server, progression);
+
+      await paged.syncOnce();
+
+      expect((await quests.byId(mine.id))!.title, 'Read', reason: 'the edit here still has to go up');
+      expect((await db.select(db.subtasks).getSingle()).questId, mine.id);
+      expect(await progression.attributeTotals(), {Attribute.discipline: 8});
+      expect(server.pulledFrom, [0, 4, 7], reason: 'the early copy did not move or hold the first page\'s cursor');
+      expect(await cursor(), 8, reason: 'held just before the quest by its own page');
+
+      server
+        ..refusedForNow.remove(mine.id)
+        ..ignored.add(mine.id); // the edit elsewhere is newer
+      await paged.syncOnce();
+      expect(server.pulledFrom.last, 8);
+      expect((await quests.byId(mine.id))!.title, 'Read (edited elsewhere)');
+      expect(await cursor(), 9);
+      expect(await db.select(db.ledgerEntries).get(), hasLength(2));
+    });
+  });
+
+  test('a stopped cycle makes no more network calls', () async {
+    await sync.syncOnce(); // writes this device's node id: no write is left to trip over
+    final pulls = api.pullCalls;
+    var asked = 0;
+    sync.stop();
+    await expectLater(
+      sync.syncOnce(
+        settings: [
+          SyncedSettings(
+            key: 'sync_test',
+            current: () async {
+              asked++;
+              return {'a': 1};
+            },
+            send: (v) async => api.profiles.add(v),
+          ),
+        ],
+      ),
+      throwsA(isA<SyncStopped>()),
+    );
+    expect(asked, 0, reason: 'settings are not read once stopped');
+    expect(api.pullCalls, pulls, reason: 'no pull after the stop');
+    expect(api.profiles, isEmpty);
+  });
+
+  test('a change the server keeps refusing holds up neither its batch nor the pull', () async {
+    final stuck = await quests.create(const QuestDraft(title: 'Refused for now'));
+    await quests.create(const QuestDraft(title: 'Fine'));
+    api.refusedForNow.add(stuck.id);
+    await sync.syncOnce();
+    final outbox = await db.select(db.outboxEntries).get();
+    expect(outbox.map((o) => o.entityId), [stuck.id], reason: 'the other change went up in the same batch');
+
+    // The server now also has a newer version of the refused quest; others
+    // keep changing. After a few refusals the row no longer holds the cursor.
+    api.pullResponse = {
+      'cursor': 30,
+      'has_more': false,
+      'changes': {
+        'quests': [
+          {
+            'id': stuck.id,
+            'tier': 'daily',
+            'title': 'Server version',
+            'change_id': 20,
+            'created_at': '2026-11-04T05:00:00Z',
+            'updated_at': '2026-11-04T05:00:00Z',
+          },
+          {
+            'id': '018f0000-0000-7000-8000-0000000000bb',
+            'tier': 'daily',
+            'title': 'Made elsewhere',
+            'change_id': 30,
+            'created_at': '2026-11-04T05:00:00Z',
+            'updated_at': '2026-11-04T05:00:00Z',
+          },
+        ],
+      },
+    };
+    for (var i = 0; i < 4; i++) {
+      await sync.syncOnce();
+    }
+    expect(await quests.byId('018f0000-0000-7000-8000-0000000000bb'), isNotNull);
+    final cursor = await (db.select(db.keyValues)..where((k) => k.key.equals('sync_cursor'))).getSingle();
+    expect(cursor.value, '30');
+  });
+
+  test('a pull that stopped early sends no account settings and runs no evaluations', () async {
+    final q = await quests.create(const QuestDraft(title: 'Write report'));
+    await progression.complete(q, provisional: true);
+    await sync.syncOnce(); // the completion goes up; its evaluation waits
+    api.evaluation = {'result': serverResult(7), 'proposal': serverProposal()};
+    final evaluations = api.evaluateCalls;
+
+    await quests.update(q.id, const QuestDraft(title: 'Edited'));
+    api
+      ..failRetryable = true
+      ..pullResponse = {
+        'cursor': 50,
+        'has_more': false,
+        'changes': {
+          'quests': [
+            {
+              'id': q.id,
+              'tier': 'daily',
+              'title': 'Server version',
+              'change_id': 50,
+              'created_at': '2026-11-04T05:00:00Z',
+              'updated_at': '2026-11-04T05:00:00Z',
+            },
+          ],
+        },
+      };
+    var accountSends = 0;
+    final report = await sync.syncOnce(
+      settings: [
+        SyncedSettings(
+          key: 'sync_account_test',
+          table: 'profiles',
+          current: () async => {'weekly_target': 6},
+          send: (_) async => accountSends++,
+          fromServer: (_) => null,
+          apply: (_) async {},
+        ),
+      ],
+    );
+    expect(accountSends, 0, reason: 'other devices\' settings may be in pages not pulled yet');
+    expect(report.evaluated, 0);
+    expect(api.evaluateCalls, evaluations, reason: 'the AI opt-in may not be on the server yet');
+  });
+
+  test('unsynced work counts completions still waiting for their evaluation', () async {
+    final q = await quests.create(const QuestDraft(title: 'Write report'));
+    await progression.complete(q, provisional: true);
+    await sync.syncOnce(); // both went up; the evaluation could not run
+    expect(await db.select(db.outboxEntries).get(), isEmpty);
+    expect(await sync.unsyncedChanges(), 1);
+  });
+
+  group('completions undone before their evaluation', () {
+    test('an undo that goes up with its completion leaves nothing unsynced', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      final outcome = await progression.complete(q, provisional: true);
+      expect(await progression.undo(outcome!.completionId), isTrue);
+      await sync.syncOnce(); // the completion and its undo go up together
+      expect(await db.select(db.outboxEntries).get(), isEmpty);
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, 0, reason: 'an undone completion is never evaluated');
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 0);
+    });
+
+    test('an undo pulled from another device ends the wait for the evaluation', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      final outcome = await progression.complete(q, provisional: true);
+      await sync.syncOnce(); // it went up; its evaluation could not run
+      expect(await sync.unsyncedChanges(), 1);
+      final calls = api.evaluateCalls;
+      final local = await db.select(db.completions).getSingle();
+      api.pullResponse = {
+        'cursor': 60,
+        'has_more': false,
+        'changes': {
+          'completions': [
+            {
+              'id': outcome!.completionId,
+              'quest_id': q.id,
+              'occurrence_day': local.occurrenceDay,
+              'completed_at': local.completedAt.toUtc().toIso8601String(),
+              'state': 'undone',
+              'undone_at': local.completedAt.toUtc().toIso8601String(),
+              'change_id': 60,
+            },
+          ],
+        },
+      };
+      await sync.syncOnce();
+      expect((await db.select(db.completions).getSingle()).state, 'undone');
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, calls, reason: 'nothing is left to evaluate');
+    });
+
+    test('a completion no longer on this device leaves the wait without a request', () async {
+      await db
+          .into(db.keyValues)
+          .insert(
+            KeyValuesCompanion.insert(
+              key: 'sync_pending_evaluations',
+              value: '["018f0000-0000-7000-8000-0000000000c9"]',
+            ),
+          );
+      expect(await sync.unsyncedChanges(), 1);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.evaluateCalls, 0);
+    });
+
+    test('the server\'s answer that a completion was undone is final', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      await progression.complete(q, provisional: true);
+      api.evaluation = {'status': 'undone'}; // undone elsewhere after this cycle's pull
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 1);
+      expect(await sync.unsyncedChanges(), 0);
+      await sync.syncOnce();
+      expect(api.evaluateCalls, 1, reason: 'not asked again');
+    });
+  });
+
+  test('the owner and its unsynced changes are known before another account claims the device', () async {
+    expect(await sync.owner(), isNull);
+    await sync.claimFor('user-a', email: 'a@example.com');
+    await quests.create(const QuestDraft(title: 'Not synced yet'));
+    expect(await sync.owner(), 'user-a');
+    expect(await sync.ownerEmail(), 'a@example.com');
+    expect(await sync.unsyncedChanges(), 1);
+  });
+
+  test('stopping waits for a cycle in progress only so long', () async {
+    final control = SyncControl(settle: const Duration(milliseconds: 50));
+    control.track(Completer<void>().future); // a request that never answers
+    final watch = Stopwatch()..start();
+    await control.stop();
+    expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+  });
+
+  group('an undo of a completion the server never took', () {
+    late String completionId;
+
+    Future<void> completeAndUndo() async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      completionId = (await progression.complete(q, provisional: true))!.completionId;
+      expect(await progression.undo(completionId), isTrue);
+    }
+
+    test('goes with its completion when the server refuses that for good', () async {
+      await completeAndUndo();
+      api.refusedForGood.add(completionId);
+      await sync.syncOnce(); // one batch: the completion, then its undo
+
+      expect(api.sent.where((c) => c['op'] == 'undo'), hasLength(1));
+      expect(await sync.unsyncedChanges(), 0, reason: 'an undo that can never succeed is not unsynced work');
+      final sent = api.sent.length;
+      await sync.syncOnce();
+      expect(api.sent.length, sent, reason: 'nothing is left to send');
+    });
+
+    test('goes too when it is made after the refusal', () async {
+      final q = await quests.create(const QuestDraft(title: 'Write report'));
+      completionId = (await progression.complete(q, provisional: true))!.completionId;
+      api.refusedForGood.add(completionId);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+
+      expect(await progression.undo(completionId), isTrue);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+    });
+
+    test('keeps waiting while its completion still waits to go up', () async {
+      await completeAndUndo();
+      api.refusedForNow.add(completionId);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), greaterThanOrEqualTo(2), reason: 'the completion and its undo both wait');
+
+      api.refusedForNow.clear();
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+      expect(api.pushed.where((c) => c['op'] == 'undo'), hasLength(1), reason: 'the undo reached the server');
+    });
+  });
+
+  group('what a change sends', () {
+    Set<String> keysOf(Map<String, Object?> change) => (change['payload']! as Map).keys.cast<String>().toSet();
+
+    Future<Quest> synced(QuestDraft draft) async {
+      final q = await quests.create(draft);
+      await sync.syncOnce();
+      api.sent.clear();
+      return q;
+    }
+
+    test('a new quest goes up whole', () async {
+      await quests.create(const QuestDraft(title: 'Write report'));
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), containsAll(['title', 'tier', 'notes', 'status', 'priority', 'created_at']));
+      expect(api.sent.single['op'], 'upsert');
+    });
+
+    test('an edit sends only the fields it changed', () async {
+      final q = await synced(const QuestDraft(title: 'Write report', notes: 'old notes'));
+      await quests.update(q.id, const QuestDraft(title: 'Write the report', notes: 'old notes'));
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), {'title', 'created_at'}, reason: 'the old notes must not overwrite newer ones');
+      expect(api.sent.single['op'], 'patch', reason: 'part of a row must not be able to create the row');
+      expect((api.sent.single['payload']! as Map)['title'], 'Write the report');
+    });
+
+    test('a form saves only what the person changed in it', () async {
+      final q = await synced(const QuestDraft(title: 'Write report', notes: 'first notes'));
+      final opened = QuestDraft.fromQuest(q);
+      await (db.update(
+        db.quests,
+      )..where((x) => x.id.equals(q.id))).write(const QuestsCompanion(notes: Value('notes from the other device')));
+
+      await quests.update(
+        q.id,
+        const QuestDraft(title: 'Write the report', notes: 'first notes'),
+        base: opened,
+      );
+
+      final row = await db.select(db.quests).getSingle();
+      expect(row.title, 'Write the report');
+      expect(row.notes, 'notes from the other device', reason: 'the form still showed the old notes');
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), {'title', 'created_at'});
+    });
+
+    test('saving without a change sends nothing', () async {
+      final q = await synced(const QuestDraft(title: 'Write report'));
+      await quests.update(q.id, const QuestDraft(title: 'Write report'));
+      expect(await sync.unsyncedChanges(), 0);
+    });
+
+    test('a reminder moves with its due date', () async {
+      final q = await synced(QuestDraft(title: 'Pay rent', dueAt: DateTime(2026, 12, 1), remindAt: 9 * 60));
+      await quests.update(q.id, QuestDraft(title: 'Pay rent', dueAt: DateTime(2026, 12, 2), remindAt: 9 * 60));
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), {'due_at', 'reminder_at', 'created_at'});
+    });
+
+    test('deleting a quest sends the deletion and frees its children', () async {
+      final goal = await synced(const QuestDraft(title: 'Learn piano', tier: QuestTier.objective));
+      final child = await synced(QuestDraft(title: 'Practise scales', parentId: goal.id));
+      await quests.delete(goal.id);
+      await sync.syncOnce();
+      expect(keysOf(api.sent.first), {'deleted_at', 'created_at'});
+      expect(api.sent.last['id'], child.id);
+      expect(keysOf(api.sent.last), {'parent_id', 'created_at'});
+      expect((api.sent.last['payload']! as Map)['parent_id'], isNull);
+    });
+
+    test('ticking a step sends only that, and its quest for the server', () async {
+      final q = await synced(const QuestDraft(title: 'Write report'));
+      await quests.addSubtask(q.id, 'Outline');
+      await sync.syncOnce();
+      api.sent.clear();
+      await quests.setSubtaskDone((await db.select(db.subtasks).getSingle()).id, true);
+      await sync.syncOnce();
+      expect(keysOf(api.sent.single), {'done', 'quest_id'});
+    });
+
+    test('part of a row the server refuses goes up whole the next time', () async {
+      final q = await synced(const QuestDraft(title: 'Write report'));
+      await quests.update(q.id, const QuestDraft(title: 'Write the report'));
+      api.refusedForGood.add(q.id);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 1, reason: 'the server may not have the row at all');
+
+      api.refusedForGood.clear();
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+      expect(keysOf(api.sent.last), containsAll(['title', 'tier', 'status']));
+    });
+
+    test('a whole row the server refuses is given up', () async {
+      await quests.create(const QuestDraft(title: 'Write report'));
+      api.refusedForGood.add((await db.select(db.quests).getSingle()).id);
+      await sync.syncOnce();
+      expect(await sync.unsyncedChanges(), 0);
+    });
+  });
+
+  group('a connection too slow for a whole page', () {
+    test('gets smaller pages, and keeps them for later cycles', () async {
+      api.timeoutAbove = 300;
+      await sync.syncOnce();
+      expect(api.askedMaxRows, [null, 250]);
+      await sync.syncOnce();
+      expect(api.askedMaxRows.last, 250, reason: 'no minute wasted on a page it cannot finish');
+    });
+
+    test('gives up for this cycle below the smallest page', () async {
+      api.timeoutAbove = 10;
+      await expectLater(sync.syncOnce(), throwsA(isA<TimeoutException>()));
+      expect(api.askedMaxRows, [null, 250, 62]);
+    });
+  });
+
+  group('a finished quest', () {
+    Map<String, Object?> lastPayload() => Map<String, Object?>.from(api.sent.last['payload']! as Map);
+
+    test('tells the server it is done, after its completion', () async {
+      final q = await quests.create(const QuestDraft(title: 'Pay rent'));
+      await progression.complete(q, provisional: true);
+      await sync.syncOnce();
+      expect([for (final c in api.sent) c['entity']], ['quest', 'completion', 'quest']);
+      expect(lastPayload().keys, unorderedEquals(['status', 'created_at']));
+      expect(lastPayload()['status'], 'completed');
+    });
+
+    test('reopens on the server when it is undone', () async {
+      final q = await quests.create(const QuestDraft(title: 'Pay rent'));
+      final outcome = await progression.complete(q, provisional: true);
+      await sync.syncOnce();
+      await progression.undo(outcome!.completionId);
+      await sync.syncOnce();
+      expect(lastPayload()['status'], 'active');
+    });
+
+    test('that recurs stays open, so nothing more goes up', () async {
+      final q = await quests.create(const QuestDraft(title: 'Walk', recurrence: Recurrence.daily));
+      await progression.complete(q, provisional: true);
+      await sync.syncOnce();
+      expect([for (final c in api.sent) c['entity']], ['quest', 'completion']);
+    });
+  });
+
+  group('account settings', () {
+    late SettingsRepository settings;
+    late List<SyncedSettings> groups;
+
+    setUp(() {
+      settings = SettingsRepository(db);
+      groups = syncedSettings(
+        settings: settings,
+        api: api,
+        regional: () => const RegionalPrefs(language: 'en').resolve(const Locale('en')),
+      );
+    });
+
+    Map<String, Object?> prefsRow({bool guild = true, bool weekly = true, String start = '22:00:00'}) => {
+      'user_id': 'u',
+      'categories': {
+        'reminders': true,
+        'guild_reactions': guild,
+        'guild_comments': guild,
+        'challenge_milestones': guild,
+        'weekly_summary': weekly,
+        'briefing': false,
+      },
+      'quiet_hours_start': start,
+      'quiet_hours_end': '08:00:00',
+    };
+
+    test('notification settings go up in the shape set_notification_prefs takes', () async {
+      await settings.updateProfile(
+        (p) => p.copyWith(notifGuild: false, quietStartMinutes: 23 * 60 + 30, quietEndMinutes: 7 * 60),
+      );
+      await sync.syncOnce(settings: groups);
+      expect(api.notificationPrefs.single, {
+        'categories': {
+          'reminders': true,
+          'guild_reactions': false,
+          'guild_comments': false,
+          'challenge_milestones': false,
+          'weekly_summary': true,
+        },
+        'quiet_hours_start': '23:30',
+        'quiet_hours_end': '07:00',
+      });
+      await sync.syncOnce(settings: groups);
+      expect(api.notificationPrefs, hasLength(1), reason: 'unchanged settings are not sent again');
+    });
+
+    test('a new device takes over the account\'s notification settings instead of sending its defaults', () async {
+      api.pullResponse = {
+        'cursor': 5,
+        'has_more': false,
+        'changes': {
+          'notification_prefs': [prefsRow(guild: false, start: '23:30:00')],
+        },
+      };
+      await sync.syncOnce(settings: groups);
+      final p = await settings.profile();
+      expect(p.notifGuild, isFalse);
+      expect(p.quietStartMinutes, 23 * 60 + 30);
+      expect(api.notificationPrefs, isEmpty, reason: 'nothing to send back');
+    });
+
+    test('changes from another device merge key by key with changes made here', () async {
+      await sync.syncOnce(settings: groups);
+      expect(api.notificationPrefs, hasLength(1));
+      // Here: weekly summary off, not sent yet. Elsewhere: guild off.
+      await settings.updateProfile((p) => p.copyWith(notifWeekly: false));
+      api.pullResponse = {
+        'cursor': 9,
+        'has_more': false,
+        'changes': {
+          'notification_prefs': [prefsRow(guild: false)],
+        },
+      };
+      await sync.syncOnce(settings: groups);
+      final p = await settings.profile();
+      expect(p.notifGuild, isFalse, reason: 'taken over from the other device');
+      expect(p.notifWeekly, isFalse, reason: 'kept from this device');
+      final sent = api.notificationPrefs.last['categories']! as Map;
+      expect(sent['guild_comments'], isFalse);
+      expect(sent['weekly_summary'], isFalse);
+    });
+
+    test('a failed first account upload never makes the device take over the server\'s defaults', () async {
+      await settings.updateProfile((p) => p.copyWith(characterName: 'Arin', aiEnabled: false, weeklyTarget: 6));
+      var accountSends = 0;
+      final failing = [
+        for (final g in groups)
+          g.key == 'sync_profile_account'
+              ? SyncedSettings(
+                  key: g.key,
+                  table: g.table,
+                  current: g.current,
+                  fromServer: g.fromServer,
+                  apply: g.apply,
+                  send: (v) async {
+                    accountSends++;
+                    if (accountSends == 1) throw StateError('connection reset');
+                    api.profiles.add(v);
+                  },
+                )
+              : g,
+      ];
+      // The device fields went up, so updated_at moved; no account setting
+      // was ever chosen on the server (account_set_at is null).
+      api.pullResponse = {
+        'cursor': 4,
+        'has_more': false,
+        'changes': {
+          'profiles': [
+            {
+              'id': 'u',
+              'display_name': '',
+              'weekly_target': 4,
+              'motivation': <String, Object?>{},
+              'ai_evaluation_enabled': true,
+              'created_at': '2026-11-04T05:00:00+00:00',
+              'updated_at': '2026-11-04T05:00:09+00:00',
+              'account_set_at': null,
+            },
+          ],
+        },
+      };
+      final first = await sync.syncOnce(settings: failing);
+      expect(first.settingsFailed, 1);
+      api.pullResponse = {...api.pullResponse, 'cursor': 5};
+      await sync.syncOnce(settings: failing);
+      final p = await settings.profile();
+      expect(p.aiEnabled, isFalse, reason: 'the AI opt-out stays');
+      expect(p.weeklyTarget, 6);
+      expect(api.profiles.last['ai_evaluation_enabled'], isFalse);
+    });
+
+    test('a name is cut between characters, never inside an emoji', () async {
+      await settings.updateProfile((p) => p.copyWith(characterName: '${'a' * 39}😀b'));
+      await sync.syncOnce(settings: groups);
+      final sent = api.profiles.firstWhere((f) => f.containsKey('display_name'))['display_name']! as String;
+      expect(sent.runes.length, 40);
+      expect(sent.endsWith('😀'), isTrue);
+    });
+
+    test('a server without account_set_at falls back to comparing the timestamps', () {
+      final row = {
+        'display_name': 'Arin',
+        'weekly_target': 5,
+        'motivation': <String, Object?>{},
+        'ai_evaluation_enabled': false,
+        'created_at': '2026-11-01T05:00:00+00:00',
+      };
+      expect(accountFromServer({...row, 'updated_at': '2026-11-01T05:00:00+00:00'}), isNull);
+      expect(accountFromServer({...row, 'updated_at': '2026-11-02T05:00:00+00:00'})?['ai_evaluation_enabled'], isFalse);
+      expect(accountFromServer({...row, 'updated_at': '2026-11-02T05:00:00+00:00', 'account_set_at': null}), isNull);
+    });
+
+    test('a profile untouched since sign-up gets this device\'s choices', () async {
+      await settings.updateProfile((p) => p.copyWith(characterName: 'Arin', weeklyTarget: 5));
+      api.pullResponse = {
+        'cursor': 3,
+        'has_more': false,
+        'changes': {
+          'profiles': [
+            {
+              'id': 'u',
+              'display_name': '',
+              'weekly_target': 4,
+              'motivation': <String, Object?>{},
+              'ai_evaluation_enabled': true,
+              'created_at': '2026-11-04T05:00:00+00:00',
+              'updated_at': '2026-11-04T05:00:00+00:00',
+            },
+          ],
+        },
+      };
+      await sync.syncOnce(settings: groups);
+      expect((await settings.profile()).weeklyTarget, 5);
+      expect(api.profiles.any((f) => f['display_name'] == 'Arin' && f['weekly_target'] == 5), isTrue);
+    });
+
+    test('an account set up elsewhere comes to a new device', () async {
+      api.pullResponse = {
+        'cursor': 3,
+        'has_more': false,
+        'changes': {
+          'profiles': [
+            {
+              'id': 'u',
+              'display_name': 'Arin Vale',
+              'weekly_target': 6,
+              'motivation': {
+                'drivers': ['mastery'],
+                'tone': 'warm',
+              },
+              'ai_evaluation_enabled': false,
+              'locale': 'fa',
+              'created_at': '2026-11-01T05:00:00+00:00',
+              'updated_at': '2026-11-03T05:00:00+00:00',
+              'account_set_at': '2026-11-02T05:00:00+00:00',
+            },
+          ],
+        },
+      };
+      await sync.syncOnce(settings: groups);
+      final p = await settings.profile();
+      expect(p.characterName, 'Arin Vale');
+      expect(p.weeklyTarget, 6);
+      expect(p.aiEnabled, isFalse);
+      expect(p.tone, 'warm');
+      expect(p.drivers, ['mastery']);
+      expect(api.profiles.where((f) => f.containsKey('weekly_target')), isEmpty, reason: 'nothing sent back');
+      expect(api.profiles.single['locale'], 'en', reason: 'where this device is still goes up');
+    });
   });
 
   test('HLC strings sort in mutation order', () {

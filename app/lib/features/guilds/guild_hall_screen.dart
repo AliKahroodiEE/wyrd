@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:wyrd_engine/wyrd_engine.dart';
-import 'package:supabase_flutter/supabase_flutter.dart' show RealtimeChannel;
+import 'package:supabase_flutter/supabase_flutter.dart' show PostgrestException, RealtimeChannel;
 
 import '../../app/providers.dart';
 import '../../core/format/bidi.dart';
@@ -16,6 +16,7 @@ import '../../design/components/states.dart';
 import '../../design/sigils.dart';
 import '../../design/tokens.dart';
 import '../../l10n/content.dart';
+import '../../l10n/generated/app_localizations.dart';
 
 /// A guild's hall: activity feed, collective challenges and members.
 /// Realtime changes trigger a refetch (never applied directly).
@@ -201,7 +202,14 @@ class _GuildHallScreenState extends ConsumerState<GuildHallScreen> {
             event: _feed[i],
             actor: _name(_feed[i].actorId),
             onReact: (kind, on) async {
-              await _api?.toggleReaction(_feed[i].id, kind, on: on);
+              try {
+                await _api?.toggleReaction(_feed[i].id, kind, on: on);
+              } on Object catch (e) {
+                if (mounted) {
+                  final message = guildErrorMessage(l10n, e, GuildAction.react);
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+                }
+              }
               await _load();
             },
             onComments: () => _openComments(_feed[i]),
@@ -553,9 +561,10 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
       await ref.read(guildApiProvider)?.addComment(widget.eventId, body);
       _input.clear();
       await _load();
-    } on Object {
+    } on Object catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(context.l10n.errorGeneric)));
+        final message = guildErrorMessage(context.l10n, e, GuildAction.comment);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
       }
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -616,4 +625,27 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
       ),
     );
   }
+}
+
+/// The guild actions the server rate-limits, each with a limit of its own.
+enum GuildAction {
+  /// react and unreact: 60 changes per member per minute, across all guilds
+  /// (…_reaction_rate_limit.sql).
+  react,
+
+  /// add_comment: 30 comments per member in one guild within the last hour,
+  /// a rolling hour (…_rpc_social.sql).
+  comment,
+}
+
+/// A refused guild [action] in words. When a rate limit refused it (hint
+/// rate_limited), reactions ask for a minute's patience and comments, whose
+/// limit counts the last hour, to come back later. Anything else gets the
+/// general message.
+String guildErrorMessage(AppLocalizations l10n, Object error, GuildAction action) {
+  if (error is! PostgrestException || error.hint != 'rate_limited') return l10n.errorGeneric;
+  return switch (action) {
+    GuildAction.react => l10n.actionRateLimited,
+    GuildAction.comment => l10n.commentRateLimited,
+  };
 }

@@ -15,7 +15,12 @@ import '../../data/remote/backend.dart';
 import '../../data/repositories/settings_repository.dart';
 import '../../design/components/panel.dart';
 import '../../design/tokens.dart';
+import '../auth/delete_account_button.dart';
+import '../install/ios_install_hint.dart';
+import '../notifications/push_tile.dart';
 import 'ai_provider_screen.dart';
+import 'clear_device_button.dart';
+import 'legal_links.dart';
 import 'theme_picker.dart';
 
 /// Settings (requirements §4.10).
@@ -159,6 +164,7 @@ class SettingsScreen extends ConsumerWidget {
                       value: profile.reducedEffects,
                       onChanged: (v) => setProfile((p) => p.copyWith(reducedEffects: v)),
                     ),
+                    const IosInstallHint(),
                   ],
                 ),
               ),
@@ -343,14 +349,21 @@ class SettingsScreen extends ConsumerWidget {
                       contentPadding: EdgeInsetsDirectional.zero,
                       title: Text(l10n.notifGuild),
                       value: profile.notifGuild,
-                      onChanged: (v) => setProfile((p) => p.copyWith(notifGuild: v)),
+                      onChanged: (v) {
+                        if (v) ref.read(pushServiceProvider).enable(); // Ask inside the tap.
+                        setProfile((p) => p.copyWith(notifGuild: v));
+                      },
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsetsDirectional.zero,
                       title: Text(l10n.notifWeekly),
                       value: profile.notifWeekly,
-                      onChanged: (v) => setProfile((p) => p.copyWith(notifWeekly: v)),
+                      onChanged: (v) {
+                        if (v) ref.read(pushServiceProvider).enable(); // Ask inside the tap.
+                        setProfile((p) => p.copyWith(notifWeekly: v));
+                      },
                     ),
+                    const PushDeviceTile(),
                     ListTile(
                       contentPadding: EdgeInsetsDirectional.zero,
                       title: Text(l10n.quietHours),
@@ -408,6 +421,7 @@ class SettingsScreen extends ConsumerWidget {
                                 child: Text(user != null ? l10n.signOut : l10n.signIn),
                               ),
                             ],
+                            if (user != null) ...[const SizedBox(height: AppSpace.xs), const DeleteAccountButton()],
                           ],
                         );
                       },
@@ -425,33 +439,13 @@ class SettingsScreen extends ConsumerWidget {
                       },
                     ),
                     const SizedBox(height: AppSpace.sm),
-                    TextButton(
-                      onPressed: () async {
-                        final ok = await showDialog<bool>(
-                          context: context,
-                          builder: (c) => AlertDialog(
-                            title: Text(l10n.deleteAllData),
-                            content: Text(l10n.deleteAllDataBody),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.pop(c, false), child: Text(l10n.actionCancel)),
-                              FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(l10n.actionDelete)),
-                            ],
-                          ),
-                        );
-                        if (ok != true) return;
-                        await ref.read(dataRepositoryProvider).wipe();
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.dataDeleted)));
-                          context.go('/onboarding');
-                        }
-                      },
-                      child: Text(l10n.deleteAllData),
-                    ),
+                    const ClearDeviceButton(),
                   ],
                 ),
               ),
               gap,
               Text(l10n.aboutLicense, style: text.bodySmall, textAlign: TextAlign.center),
+              const LegalLinks(),
               const SizedBox(height: AppSpace.xxl),
             ],
           ),

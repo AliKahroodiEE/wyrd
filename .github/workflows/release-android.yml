@@ -1,0 +1,230 @@
+name: Release Android APK
+
+# Builds the signed, universal production APK and attaches it to the GitHub
+# Release for the tag (created if needed). Users install it directly or with
+# Obtainium, which then offers every new release. Owner setup:
+# docs/deployment.md.
+#
+# The tag decides the version: v1.4.2 builds versionName 1.4.2 with
+# versionCode 1004002, so every later tag installs as an update.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, such as v1.0.0 (default v + the version in app/pubspec.yaml)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Build and publish the APK
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+      FIREBASE_API_KEY: ${{ vars.FIREBASE_API_KEY }}
+      FIREBASE_APP_ID_WEB: ${{ vars.FIREBASE_APP_ID_WEB }}
+      FIREBASE_APP_ID_ANDROID: ${{ vars.FIREBASE_APP_ID_ANDROID }}
+      FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+      FIREBASE_VAPID_KEY: ${{ vars.FIREBASE_VAPID_KEY }}
+    steps:
+      - name: Check signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=()
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error title=Android signing secrets missing::Missing repository secrets: ${missing[*]}. Run tool/setup_production.sh (Android keystore step) or add them in Settings > Secrets and variables > Actions; see docs/deployment.md. Nothing was released."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - name: Work out the version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          SITE_URL_VARIABLE: ${{ vars.WYRD_SITE_URL }}
+          CF_PAGES_PROJECT: ${{ vars.CF_PAGES_PROJECT || 'wyrd-app' }}
+          GOOGLE_SIGN_IN: ${{ vars.WYRD_AUTH_GOOGLE }}
+          GOOGLE_CLIENT_ID: ${{ vars.WYRD_GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.WYRD_GOOGLE_CLIENT_SECRET }}
+          GH_SIGN_IN: ${{ vars.WYRD_AUTH_GITHUB }}
+          GH_CLIENT_ID: ${{ vars.WYRD_GITHUB_CLIENT_ID }}
+          GH_CLIENT_SECRET: ${{ secrets.WYRD_GITHUB_CLIENT_SECRET }}
+        run: |
+          pubspec_version() { sed -n 's/^version:[[:space:]]*\([^+[:space:]]*\).*/\1/p' app/pubspec.yaml; }
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="${INPUT_TAG:-v$(pubspec_version)}"
+          fi
+          if ! [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error title=Unsupported tag::'$tag' is not a version tag like v1.2.3 or v1.3.0-beta.1."
+            exit 1
+          fi
+          # A release always matches its tag: a manual run of a tag that already
+          # exists builds that tag's commit, not the branch the run started on.
+          # (A new tag is created on this commit when the release is published.)
+          if [ "$GITHUB_EVENT_NAME" != "push" ]; then
+            found=0
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null || found=$?
+            case "$found" in
+              0)
+                git fetch --no-tags --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"
+                git checkout --quiet --detach "refs/tags/$tag"
+                echo "::notice title=Rebuilding $tag::$tag already exists, so this run builds its commit and replaces that release's APK."
+                ;;
+              2) ;; # no such tag yet: it is created on this commit
+              *)
+                echo "::error title=Could not check $tag::git ls-remote failed (exit $found), so it is unknown whether $tag exists. Run the workflow again."
+                exit 1
+                ;;
+            esac
+          fi
+          pubspec_version="$(pubspec_version)"
+          major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[2]}" patch="${BASH_REMATCH[3]}"
+          if [ "$minor" -gt 999 ] || [ "$patch" -gt 999 ]; then
+            echo "::error title=Unsupported tag::Minor and patch numbers above 999 do not fit the versionCode scheme."
+            exit 1
+          fi
+          version="${tag#v}"
+          if [ "${version%%-*}" != "$pubspec_version" ]; then
+            echo "::warning title=Version mismatch::app/pubspec.yaml says $pubspec_version, the tag says $version. The APK uses $version."
+          fi
+          site_url="${SITE_URL_VARIABLE:-https://$CF_PAGES_PROJECT.pages.dev}"
+          {
+            echo "RELEASE_TAG=$tag"
+            echo "APP_VERSION=$version"
+            echo "APP_VERSION_CODE=$((10#$major * 1000000 + 10#$minor * 1000 + 10#$patch))"
+            echo "PRERELEASE=$([[ "$version" == *-* ]] && echo true || echo false)"
+            echo "WYRD_SITE_URL=${site_url%/}"
+          } >> "$GITHUB_ENV"
+          # Sign-in buttons appear only for providers the backend deploy switches
+          # on: the switch is true and both halves of the OAuth client exist.
+          sign_in() { # NAME SWITCH CLIENT_ID SECRET
+            local value=false
+            if [ "$2" = true ]; then
+              if [ -n "$3" ] && [ -n "$4" ]; then
+                value=true
+              else
+                echo "::warning title=$1 sign-in hidden::WYRD_AUTH_$1 is true but the WYRD_$1_CLIENT_ID variable or the WYRD_$1_CLIENT_SECRET secret is missing, so the button stays hidden."
+              fi
+            fi
+            echo "WYRD_AUTH_$1=$value" >> "$GITHUB_ENV"
+          }
+          sign_in GOOGLE "$GOOGLE_SIGN_IN" "$GOOGLE_CLIENT_ID" "$GOOGLE_CLIENT_SECRET"
+          sign_in GITHUB "$GH_SIGN_IN" "$GH_CLIENT_ID" "$GH_CLIENT_SECRET"
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Restore the upload keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          keystore="$RUNNER_TEMP/upload-keystore.jks"
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"; then
+            echo "::error title=Invalid ANDROID_KEYSTORE_BASE64::The secret is not valid base64. Store it again with tool/setup_production.sh."
+            exit 1
+          fi
+          if ! keytool -list -keystore "$keystore" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$ANDROID_KEY_ALIAS" > /dev/null; then
+            echo "::error title=Keystore check failed::The keystore does not open with ANDROID_KEYSTORE_PASSWORD or has no key named ANDROID_KEY_ALIAS."
+            exit 1
+          fi
+          echo "ANDROID_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build the APK
+        working-directory: app
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          flutter build apk --release --build-name="$APP_VERSION" --build-number="$APP_VERSION_CODE" \
+            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
+            --dart-define=SUPABASE_PUBLISHABLE_KEY="$SUPABASE_PUBLISHABLE_KEY" \
+            --dart-define=WYRD_AUTH_GOOGLE="$WYRD_AUTH_GOOGLE" \
+            --dart-define=WYRD_AUTH_GITHUB="$WYRD_AUTH_GITHUB" \
+            --dart-define=WYRD_SITE_URL="$WYRD_SITE_URL" \
+            --dart-define=FIREBASE_API_KEY="$FIREBASE_API_KEY" \
+            --dart-define=FIREBASE_APP_ID_WEB="$FIREBASE_APP_ID_WEB" \
+            --dart-define=FIREBASE_APP_ID_ANDROID="$FIREBASE_APP_ID_ANDROID" \
+            --dart-define=FIREBASE_MESSAGING_SENDER_ID="$FIREBASE_MESSAGING_SENDER_ID" \
+            --dart-define=FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" \
+            --dart-define=FIREBASE_VAPID_KEY="$FIREBASE_VAPID_KEY"
+
+      - name: Check the signature and name the file
+        run: |
+          apk=app/build/app/outputs/flutter-apk/app-release.apk
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          "$apksigner" verify --print-certs "$apk" > "$RUNNER_TEMP/signer.txt"
+          if grep -q 'CN=Android Debug' "$RUNNER_TEMP/signer.txt"; then
+            echo "::error title=Debug-signed APK::The APK is signed with the debug key. Check the Android signing secrets."
+            exit 1
+          fi
+          cert_sha256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/signer.txt")"
+          echo "CERT_SHA256=$cert_sha256" >> "$GITHUB_ENV"
+          mkdir -p dist
+          cp "$apk" "dist/wyrd-$APP_VERSION.apk"
+          (cd dist && sha256sum "wyrd-$APP_VERSION.apk" > "wyrd-$APP_VERSION.apk.sha256")
+
+      - name: Write the release notes
+        run: |
+          repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          ## Install on Android
+
+          - **With automatic update checks (recommended):** install [Obtainium](https://github.com/ImranR98/Obtainium/releases), then [add Wyrd to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/$repo_url) (or add \`$repo_url\` by hand). It installs this APK and offers every new release.
+          - **By hand:** download \`wyrd-$APP_VERSION.apk\` below, open it and allow your browser or file manager to install apps. If Play Protect warns about an unknown app, choose *More details*, then *Install anyway*.
+
+          Updates install over the previous version and keep your data. Requires Android 7.0 or newer.
+
+          **iPhone and iPad:** open $WYRD_SITE_URL in Safari, tap Share, then *Add to Home Screen*.
+
+          Signing certificate SHA-256: \`$CERT_SHA256\`
+          EOF
+
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Wyrd ${{ env.APP_VERSION }}
+          body_path: ${{ runner.temp }}/notes.md
+          generate_release_notes: true
+          prerelease: ${{ env.PRERELEASE }}
+          files: |
+            dist/wyrd-${{ env.APP_VERSION }}.apk
+            dist/wyrd-${{ env.APP_VERSION }}.apk.sha256
+          fail_on_unmatched_files: true
+          overwrite_files: true

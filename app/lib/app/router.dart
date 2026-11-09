@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:wyrd_engine/wyrd_engine.dart';
 
+import '../data/remote/backend.dart';
 import '../design/components/motion.dart';
 import '../features/auth/auth_screen.dart';
 import '../features/character/character_screen.dart';
@@ -24,6 +25,11 @@ final initialOnboardedProvider = Provider<bool>((ref) => false);
 
 final _rootKey = GlobalKey<NavigatorState>(debugLabel: 'root');
 
+/// Whether [location] is what Auth appended to a sign-in link
+/// (`#error=access_denied&error_description=…`) rather than a screen.
+bool _isSignInLinkFragment(Uri location) =>
+    location.pathSegments.length == 1 && isAuthCallbackUri(Uri(query: location.pathSegments.single));
+
 final routerProvider = Provider<GoRouter>((ref) {
   final onboarded = ValueNotifier<bool>(ref.read(initialOnboardedProvider));
   ref.listen(profileProvider, (_, next) {
@@ -36,6 +42,10 @@ final routerProvider = Provider<GoRouter>((ref) {
     initialLocation: onboarded.value ? '/character' : '/onboarding',
     refreshListenable: onboarded,
     redirect: (context, state) {
+      // A sign-in that came back with an error also carries it in the URL
+      // fragment, which the web app's hash routing reads as a location. Go
+      // home instead of "Page Not Found"; the app explains the error there.
+      if (_isSignInLinkFragment(state.uri)) return onboarded.value ? '/character' : '/onboarding';
       final atOnboarding = state.matchedLocation == '/onboarding';
       if (!onboarded.value && !atOnboarding) return '/onboarding';
       if (onboarded.value && atOnboarding) return '/character';

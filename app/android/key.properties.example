@@ -1,0 +1,18 @@
+# Local release signing. Copy to key.properties (gitignored) to sign
+# `flutter build apk --release` with the upload key on this machine.
+# CI does not read this file: it uses the ANDROID_KEYSTORE_BASE64,
+# ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD
+# secrets (tool/setup_production.sh, docs/deployment.md).
+#
+# The environment variables ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD override these values. Without
+# either, release builds are signed with the debug key.
+#
+# Never commit key.properties or the keystore.
+
+# Absolute path, or relative to app/android/app/.
+storeFile=/absolute/path/to/wyrd-upload.jks
+storePassword=change-me
+keyAlias=upload
+# Same as storePassword for keystores created by keytool's default (PKCS12) format.
+keyPassword=change-me

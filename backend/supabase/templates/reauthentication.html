@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<title>Confirm it's you</title>
+</head>
+<!-- Supabase Auth email template (reauthentication). Wyrd sends 6-digit codes only, no links.
+     Template variables used: .Token (the code), .SiteURL, and .Email / .NewEmail for email changes.
+     No remote images or fonts; inline styles only, so it renders the same in every mail app. -->
+<body style="margin:0;padding:0;background-color:#09090E;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#09090E;">Your Wyrd code is {{ .Token }} &middot; کد تو: {{ .Token }}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#09090E;">
+<tr>
+<td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;background-color:#181C2B;border:1px solid #2C3346;border-radius:18px;">
+<tr>
+<td style="height:3px;line-height:3px;font-size:0;background-color:#FF5A64;background-image:linear-gradient(90deg,#C0202D,#FF5A64,#FF8A4C);border-radius:18px 18px 0 0;">&nbsp;</td>
+</tr>
+<tr>
+<td align="center" style="padding:28px 32px 4px 32px;font-family:Georgia,'Times New Roman',serif;font-size:13px;letter-spacing:6px;color:#FF8A4C;">&#10022;&nbsp; WYRD &nbsp;&#10022;</td>
+</tr>
+<tr>
+<td style="padding:20px 32px 8px 32px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<h1 style="margin:0 0 12px 0;font-family:Georgia,'Times New Roman',serif;font-size:24px;line-height:32px;font-weight:600;color:#F1EBDF;">Confirm it's you</h1>
+<p style="margin:0 0 20px 0;font-size:15px;line-height:24px;color:#C9CCD6;">Enter this code in Wyrd to confirm this change to your account.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;"><tr><td dir="ltr" align="center" style="padding:14px 26px;background-color:#111320;border:1px solid #C0202D;border-radius:14px;font-family:'SFMono-Regular',Menlo,Consolas,'Courier New',monospace;font-size:34px;line-height:40px;font-weight:700;letter-spacing:8px;color:#FF8A4C;">{{ .Token }}</td></tr></table>
+<p style="margin:16px 0 0 0;font-size:13px;line-height:20px;color:#8E94A3;">The code works for one hour. If you didn't ask for it, ignore this email: nothing changes until the code is used.</p>
+</td>
+</tr>
+<tr>
+<td style="padding:20px 32px 0 32px;"><div style="height:1px;line-height:1px;font-size:0;background-color:#2C3346;">&nbsp;</div></td>
+</tr>
+<tr>
+<td dir="rtl" lang="fa" style="padding:20px 32px 8px 32px;text-align:right;font-family:Tahoma,'Segoe UI',Arial,sans-serif;">
+<h2 style="margin:0 0 12px 0;font-size:21px;line-height:32px;font-weight:700;color:#F1EBDF;">تأیید هویت</h2>
+<p style="margin:0 0 20px 0;font-size:15px;line-height:28px;color:#C9CCD6;">این کد را در سرنوشت&zwnj;ساز وارد کن تا این تغییر در حسابت تأیید شود.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;"><tr><td dir="ltr" align="center" style="padding:14px 26px;background-color:#111320;border:1px solid #C0202D;border-radius:14px;font-family:'SFMono-Regular',Menlo,Consolas,'Courier New',monospace;font-size:34px;line-height:40px;font-weight:700;letter-spacing:8px;color:#FF8A4C;">{{ .Token }}</td></tr></table>
+<p style="margin:16px 0 0 0;font-size:13px;line-height:24px;color:#8E94A3;">این کد تا یک ساعت اعتبار دارد. اگر خودت آن را نخواسته&zwnj;ای، این ایمیل را نادیده بگیر؛ تا کد استفاده نشود چیزی عوض نمی&zwnj;شود.</p>
+</td>
+</tr>
+<tr>
+<td align="center" style="padding:28px 32px 28px 32px;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:18px;color:#5A6074;">
+Wyrd &middot; سرنوشت&zwnj;ساز &middot; <span dir="ltr">{{ .SiteURL }}</span><br>
+Your character is who you become.<br>
+<span dir="rtl" lang="fa" style="font-family:Tahoma,'Segoe UI',Arial,sans-serif;">شخصیتت کسی است که به آن تبدیل می&zwnj;شوی.</span>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+</table>
+</body>
+</html>

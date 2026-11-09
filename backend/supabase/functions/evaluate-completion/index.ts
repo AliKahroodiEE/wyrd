@@ -6,7 +6,7 @@
  *
  * `client_proposal` is a proposal the device obtained from the user's own AI
  * provider (bring your own key); it is validated and bounded server-side.
- *   Authorization: Bearer <user access token>   (or the service-role key)
+ *   Authorization: Bearer <user access token>   (or a secret key as `apikey`)
  *
  * 1. Verify the caller and that they own the completion.
  * 2. Load the minimised evaluator inputs (rules §8.2) with the service role.

@@ -47,8 +47,17 @@ GoogleService-Info.plist
 # Node / Deno tooling
 node_modules/
 
+# Release tooling (tool/setup_production.sh, Cloudflare wrangler)
+.wrangler/
+*.apk
+*.aab
+*-backup-key.txt
+
 # Library packages do not pin dependencies
 packages/*/pubspec.lock
 
 # Local agent tooling
 .claude/
+
+# Python bytecode (tool/ scripts)
+__pycache__/
