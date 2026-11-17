@@ -2492,10 +2492,16 @@ abstract class AppLocalizations {
   /// **'This service doesn\'t share a model list, so type the model\'s name.'**
   String get aiModelsNoList;
 
+  /// No description provided for @aiModelsNoListAtAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'No model list at this address. Check the API base URL, or type the model\'s name.'**
+  String get aiModelsNoListAtAddress;
+
   /// No description provided for @aiModelsEmpty.
   ///
   /// In en, this message translates to:
-  /// **'The provider listed no models for this key.'**
+  /// **'The provider listed no models.'**
   String get aiModelsEmpty;
 
   /// No description provided for @aiModelNotListed.
@@ -2569,6 +2575,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'the key was rejected'**
   String get aiErrAuth;
+
+  /// No description provided for @aiErrNoKey.
+  ///
+  /// In en, this message translates to:
+  /// **'there\'s no API key for this provider yet'**
+  String get aiErrNoKey;
 
   /// No description provided for @aiErrRate.
   ///

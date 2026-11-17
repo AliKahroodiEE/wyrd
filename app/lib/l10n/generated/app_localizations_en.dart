@@ -1342,7 +1342,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get aiModelsNoList => 'This service doesn\'t share a model list, so type the model\'s name.';
 
   @override
-  String get aiModelsEmpty => 'The provider listed no models for this key.';
+  String get aiModelsNoListAtAddress =>
+      'No model list at this address. Check the API base URL, or type the model\'s name.';
+
+  @override
+  String get aiModelsEmpty => 'The provider listed no models.';
 
   @override
   String get aiModelNotListed => 'This name isn\'t in the provider\'s list. Check it, or choose one from the list.';
@@ -1384,6 +1388,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get aiErrAuth => 'the key was rejected';
+
+  @override
+  String get aiErrNoKey => 'there\'s no API key for this provider yet';
 
   @override
   String get aiErrRate => 'too many requests — try again shortly';

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:drift/drift.dart' show DatabaseConnection;
@@ -62,6 +63,21 @@ void main() {
   String modelText(WidgetTester tester) =>
       tester.widget<TextField>(find.widgetWithText(TextField, 'Model')).controller!.text;
 
+  /// Leaves the address field the way the keyboard's Done key does.
+  Future<void> finishAddress(WidgetTester tester) async {
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await settle(tester);
+  }
+
+  Future<void> chooseProvider(WidgetTester tester, String label) async {
+    await tester.tap(find.byType(DropdownButtonFormField<AiProviderKind>));
+    await settle(tester);
+    await tester.tap(find.text(label).last);
+    await settle(tester);
+  }
+
+  const compatible = 'OpenAI-compatible service (OpenRouter, Groq, Ollama…)';
+
   testWidgets("the saved provider's models load on open and one tap picks a model", (tester) async {
     await saveAnthropic();
     await pump(tester, (_) => _models(_claude));
@@ -114,7 +130,7 @@ void main() {
     expect(find.text('3 models available — choose one from the list, or type a name.'), findsOneWidget);
   });
 
-  testWidgets("a service without a model list says so, and typing still works", (tester) async {
+  testWidgets('a custom address without a model list points at the address, and typing still works', (tester) async {
     await pump(tester, (_) => http.Response('not found', 404));
 
     await tester.tap(find.byType(DropdownButtonFormField<AiProviderKind>));
@@ -125,9 +141,13 @@ void main() {
 
     await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https://llm.example.test/v1');
     await tester.pump(const Duration(seconds: 1));
-    await settle(tester);
+    expect(requests, isEmpty, reason: 'nothing is asked while the address is being typed');
+    await finishAddress(tester);
     expect(requests.single.url.toString(), 'https://llm.example.test/v1/models');
-    expect(find.text("This service doesn't share a model list, so type the model's name."), findsOneWidget);
+    expect(
+      find.text("No model list at this address. Check the API base URL, or type the model's name."),
+      findsOneWidget,
+    );
     expect(find.byTooltip('Load the list again'), findsNothing, reason: 'reloading will not help');
 
     await tester.enterText(find.widgetWithText(TextField, 'Model'), 'my-model');
@@ -159,5 +179,132 @@ void main() {
     await settle(tester);
     expect(tester.takeException(), isNull);
     expect(find.text('Claude Sonnet X'), findsOneWidget);
+  });
+
+  testWidgets('a typed key only ever goes to the address it was typed for', (tester) async {
+    await pump(
+      tester,
+      (req) => _models([
+        {'id': '${req.url.host}-model'},
+      ]),
+    );
+    await chooseProvider(tester, compatible);
+    await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https://openrouter.ai/api/v1');
+    await finishAddress(tester);
+    await tester.enterText(find.widgetWithText(TextField, 'API key'), 'sk-or');
+    await tester.pump(const Duration(seconds: 1));
+    await settle(tester);
+    expect(requests.last.url.host, 'openrouter.ai');
+    expect(requests.last.headers['authorization'], 'Bearer sk-or');
+
+    // Retype the address character by character, pausing as a slow typist would.
+    const next = 'https://api.groq.com/openai/v1';
+    final before = requests.length;
+    for (var i = 8; i <= next.length; i++) {
+      await tester.enterText(find.widgetWithText(TextField, 'API base URL'), next.substring(0, i));
+      await tester.pump(const Duration(seconds: 1));
+    }
+    expect(requests.length, before, reason: 'no request while the address is half-typed');
+    await finishAddress(tester);
+
+    final elsewhere = requests.where((r) => r.url.host != 'openrouter.ai').toList();
+    expect(elsewhere.single.url.toString(), 'https://api.groq.com/openai/v1/models');
+    expect(
+      elsewhere.single.headers.containsKey('authorization'),
+      isFalse,
+      reason: "the OpenRouter key stays with OpenRouter",
+    );
+    expect(tester.widget<TextField>(find.widgetWithText(TextField, 'API key')).controller!.text, isEmpty);
+  });
+
+  testWidgets('editing the path of the same address keeps the typed key', (tester) async {
+    await pump(tester, (_) => _models(_claude));
+    await chooseProvider(tester, compatible);
+    await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https://llm.example.test');
+    await finishAddress(tester);
+    await tester.enterText(find.widgetWithText(TextField, 'API key'), 'sk-same');
+    await tester.pump(const Duration(seconds: 1));
+    await settle(tester);
+    await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https://llm.example.test/v1');
+    await finishAddress(tester);
+    expect(requests.last.url.toString(), 'https://llm.example.test/v1/models');
+    expect(requests.last.headers['authorization'], 'Bearer sk-same');
+  });
+
+  testWidgets("after a switch, saving doesn't pair the old key with the new provider", (tester) async {
+    await saveAnthropic();
+    await pump(tester, (req) => req.headers['authorization'] == null ? http.Response('', 401) : _models(_claude));
+    expect(find.text('A key is saved on this device. Leave this empty to keep it.'), findsOneWidget);
+
+    await chooseProvider(tester, compatible);
+    expect(find.text('A key is saved on this device. Leave this empty to keep it.'), findsNothing);
+    await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https://llm.example.test/v1');
+    await finishAddress(tester);
+    await tester.enterText(find.widgetWithText(TextField, 'Model'), 'some-model');
+    await settle(tester);
+
+    await tester.tap(find.text('Test connection'));
+    await settle(tester);
+    expect(keys.value, isNull, reason: "the Anthropic key isn't kept for another service");
+    expect(requests.where((r) => r.headers.values.any((v) => v.contains('sk-saved'))), hasLength(1));
+    expect(
+      requests.where((r) => r.url.host == 'llm.example.test').every((r) => r.headers['authorization'] == null),
+      isTrue,
+    );
+    expect(find.text("Couldn't connect: there's no API key for this provider yet"), findsOneWidget);
+  });
+
+  testWidgets("a late answer for the previous provider doesn't overwrite the new one", (tester) async {
+    await saveAnthropic();
+    final slow = Completer<http.Response>();
+    await pumpPage(
+      tester,
+      const AiProviderScreen(),
+      overrides: [
+        aiSettingsRepositoryProvider.overrideWithValue(
+          AiSettingsRepository(
+            db,
+            keys,
+            httpClient: MockClient((req) {
+              requests.add(req);
+              return slow.future;
+            }),
+          ),
+        ),
+      ],
+    );
+    expect(find.text("Loading the provider's models…"), findsOneWidget);
+    await chooseProvider(tester, 'OpenAI');
+    expect(find.text("Enter your API key to see this provider's models."), findsOneWidget);
+
+    slow.complete(_models(_claude));
+    await settle(tester);
+    expect(find.text("Enter your API key to see this provider's models."), findsOneWidget);
+    expect(find.byTooltip('Choose a model'), findsNothing);
+  });
+
+  testWidgets('ids with a models/ prefix match the name in the field', (tester) async {
+    await AiSettingsRepository(db, keys).save(
+      const AiProviderConfig(
+        kind: AiProviderKind.openaiCompatible,
+        model: 'gemini-x',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      ),
+      apiKey: 'g-key',
+    );
+    await pump(
+      tester,
+      (_) => _models([
+        {'id': 'models/gemini-x'},
+        {'id': 'models/gemini-y'},
+      ]),
+    );
+    expect(find.text('2 models available — choose one from the list, or type a name.'), findsOneWidget);
+    await tester.tap(find.byTooltip('Choose a model'));
+    await settle(tester);
+    final tile = tester.widget<ListTile>(
+      find.ancestor(of: find.text('models/gemini-x'), matching: find.byType(ListTile)),
+    );
+    expect(tile.selected, isTrue);
   });
 }

@@ -1329,7 +1329,11 @@ class AppLocalizationsFa extends AppLocalizations {
   String get aiModelsNoList => 'این سرویس فهرست مدل‌هایش را ارائه نمی‌دهد؛ نام مدل را بنویس.';
 
   @override
-  String get aiModelsEmpty => 'سرویس‌دهنده برای این کلید هیچ مدلی فهرست نکرد.';
+  String get aiModelsNoListAtAddress =>
+      'در این نشانی فهرست مدلی پیدا نشد. نشانی پایه‌ی API را بررسی کن یا نام مدل را بنویس.';
+
+  @override
+  String get aiModelsEmpty => 'سرویس‌دهنده هیچ مدلی فهرست نکرد.';
 
   @override
   String get aiModelNotListed => 'این نام در فهرست سرویس‌دهنده نیست. بررسی‌اش کن یا یکی را از فهرست انتخاب کن.';
@@ -1371,6 +1375,9 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get aiErrAuth => 'کلید پذیرفته نشد';
+
+  @override
+  String get aiErrNoKey => 'هنوز کلید API این سرویس‌دهنده وارد نشده است';
 
   @override
   String get aiErrRate => 'درخواست‌ها زیاد است — کمی بعد دوباره امتحان کن';
