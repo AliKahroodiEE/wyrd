@@ -324,7 +324,9 @@ Persian copy needs a review by a native speaker before release.
 plans, with no credit card anywhere.
 
 **AI is optional and can cost the operator nothing.** Each user can connect their own Anthropic,
-OpenAI, Google Gemini or compatible account under *Settings → AI → Your own AI*. The key stays in
+OpenAI, Google Gemini or compatible account under *Settings → AI → Your own AI*. Once the key is in,
+the app lists the provider's models to choose from when the provider offers a list, so you usually
+don't have to type a model name. The key stays in
 the device's secure storage and goes only to that provider. A server-side key
 (`ANTHROPIC_API_KEY`) is supported but not required.
 
