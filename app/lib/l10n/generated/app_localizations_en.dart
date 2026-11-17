@@ -1339,6 +1339,11 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String aiModelsFailedRegion(String reason) {
+    return 'Couldn\'t load the model list: $reason.';
+  }
+
+  @override
   String get aiModelsNoList => 'This service doesn\'t share a model list, so type the model\'s name.';
 
   @override
@@ -1374,6 +1379,11 @@ class AppLocalizationsEn extends AppLocalizations {
       'In the browser, the key is kept in this browser\'s encrypted storage. Prefer a key with a spending limit.';
 
   @override
+  String aiWebCorsNote(String origin) {
+    return 'In the browser, the service must accept requests from $origin. Ollama: set OLLAMA_ORIGINS=$origin. LM Studio: turn on CORS.';
+  }
+
+  @override
   String get aiTest => 'Test connection';
 
   @override
@@ -1384,6 +1394,11 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String aiTestFailed(String reason) {
     return 'Couldn\'t connect: $reason';
+  }
+
+  @override
+  String aiTestFailedRegion(String reason) {
+    return 'Couldn\'t connect: $reason. Under Provider, choose a compatible service that works in your country.';
   }
 
   @override
@@ -1410,6 +1425,19 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get aiErrRegion =>
+      'the provider refused the request, most likely because it doesn\'t serve the country or region you\'re connecting from';
+
+  @override
+  String aiErrWithDetail(String reason, String detail) {
+    return '$reason (the provider said: “$detail”)';
+  }
+
+  @override
+  String get aiErrInsecureAddress =>
+      'browsers block plain http:// addresses from this https site, so use an https address';
+
+  @override
   String get aiRemove => 'Remove provider and key';
 
   @override
@@ -1420,6 +1448,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get aiFallbackUsed => 'Your AI couldn\'t be reached, so the built-in rules were used.';
+
+  @override
+  String aiFallbackUsedBecause(String reason) {
+    return 'Your AI couldn\'t be used ($reason), so the built-in rules were used.';
+  }
 
   @override
   String get sectionNotifications => 'Notifications';

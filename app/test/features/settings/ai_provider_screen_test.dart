@@ -368,4 +368,41 @@ void main() {
     await settle(tester);
     expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Save')).onPressed, isNotNull);
   });
+
+  testWidgets("a provider that refuses the user's country says so, with a next step", (tester) async {
+    await AiSettingsRepository(db, keys).save(
+      const AiProviderConfig(kind: AiProviderKind.openai, model: 'gpt-x'),
+      apiKey: 'sk-saved',
+    );
+    await pump(
+      tester,
+      (_) => http.Response(
+        jsonEncode({
+          'error': {
+            'code': 'unsupported_country_region_territory',
+            'message': 'Country, region, or territory not supported',
+            'type': 'request_forbidden',
+          },
+        }),
+        403,
+      ),
+    );
+    expect(
+      find.text(
+        "Couldn't load the model list: the provider refused the request, most likely because it doesn't serve "
+        "the country or region you're connecting from.",
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Test connection'));
+    await settle(tester);
+    expect(find.textContaining("Couldn't connect: the provider refused the request, most likely"), findsOneWidget);
+    expect(find.textContaining('Country, region, or territory not supported'), findsOneWidget);
+    expect(
+      find.textContaining('Under Provider, choose a compatible service that works in your country.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('the key was rejected'), findsNothing);
+  });
 }

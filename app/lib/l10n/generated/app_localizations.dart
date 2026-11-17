@@ -2486,6 +2486,12 @@ abstract class AppLocalizations {
   /// **'Couldn\'t load the model list: {reason}. You can still type the name.'**
   String aiModelsFailed(String reason);
 
+  /// No description provided for @aiModelsFailedRegion.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load the model list: {reason}.'**
+  String aiModelsFailedRegion(String reason);
+
   /// No description provided for @aiModelsNoList.
   ///
   /// In en, this message translates to:
@@ -2552,6 +2558,12 @@ abstract class AppLocalizations {
   /// **'In the browser, the key is kept in this browser\'s encrypted storage. Prefer a key with a spending limit.'**
   String get aiWebKeyNote;
 
+  /// No description provided for @aiWebCorsNote.
+  ///
+  /// In en, this message translates to:
+  /// **'In the browser, the service must accept requests from {origin}. Ollama: set OLLAMA_ORIGINS={origin}. LM Studio: turn on CORS.'**
+  String aiWebCorsNote(String origin);
+
   /// No description provided for @aiTest.
   ///
   /// In en, this message translates to:
@@ -2569,6 +2581,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Couldn\'t connect: {reason}'**
   String aiTestFailed(String reason);
+
+  /// No description provided for @aiTestFailedRegion.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t connect: {reason}. Under Provider, choose a compatible service that works in your country.'**
+  String aiTestFailedRegion(String reason);
 
   /// No description provided for @aiErrAuth.
   ///
@@ -2612,6 +2630,24 @@ abstract class AppLocalizations {
   /// **'the provider returned an error ({status})'**
   String aiErrHttp(String status);
 
+  /// No description provided for @aiErrRegion.
+  ///
+  /// In en, this message translates to:
+  /// **'the provider refused the request, most likely because it doesn\'t serve the country or region you\'re connecting from'**
+  String get aiErrRegion;
+
+  /// No description provided for @aiErrWithDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'{reason} (the provider said: “{detail}”)'**
+  String aiErrWithDetail(String reason, String detail);
+
+  /// No description provided for @aiErrInsecureAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'browsers block plain http:// addresses from this https site, so use an https address'**
+  String get aiErrInsecureAddress;
+
   /// No description provided for @aiRemove.
   ///
   /// In en, this message translates to:
@@ -2635,6 +2671,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Your AI couldn\'t be reached, so the built-in rules were used.'**
   String get aiFallbackUsed;
+
+  /// No description provided for @aiFallbackUsedBecause.
+  ///
+  /// In en, this message translates to:
+  /// **'Your AI couldn\'t be used ({reason}), so the built-in rules were used.'**
+  String aiFallbackUsedBecause(String reason);
 
   /// No description provided for @sectionNotifications.
   ///
