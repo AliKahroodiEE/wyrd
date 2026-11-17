@@ -66,16 +66,17 @@ class AiSettingsRepository {
       a != null && a.kind == b.kind && a.effectiveBaseUrl == b.effectiveBaseUrl;
 
   /// Saves the provider. A null or empty [apiKey] keeps the stored key for
-  /// the same service only: moving to another service without a new key
-  /// deletes the old one, so it can't be sent where it doesn't belong. The
-  /// key is settled before the settings are written, so a failure can't
-  /// leave new settings paired with the old key.
+  /// the same service only: moving to another service without a new key,
+  /// or saving when no settings own the stored key, deletes it, so it can't
+  /// be sent where it doesn't belong. The key is settled before the settings
+  /// are written, so a failure can't leave new settings paired with an old
+  /// key.
   Future<void> save(AiProviderConfig config, {String? apiKey}) async {
     final previous = await this.config();
     final key = apiKey?.trim() ?? '';
     if (key.isNotEmpty) {
       await _keys.write(key);
-    } else if (previous != null && !sameService(previous, config)) {
+    } else if (!sameService(previous, config)) {
       await _keys.delete();
     }
     await _db

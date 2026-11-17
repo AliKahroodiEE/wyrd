@@ -307,4 +307,65 @@ void main() {
     );
     expect(tile.selected, isTrue);
   });
+
+  testWidgets('a key pasted before the address never reaches a half-typed host when focus leaves by itself', (
+    tester,
+  ) async {
+    await pump(tester, (_) => _models(_claude));
+    await chooseProvider(tester, compatible);
+    await tester.enterText(find.widgetWithText(TextField, 'API key'), 'sk-early');
+    await tester.pump(const Duration(seconds: 1));
+    await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https://api.deepseek.co');
+    await settle(tester);
+
+    // Opening the provider menu takes focus from the half-typed address.
+    await tester.tap(find.byType(DropdownButtonFormField<AiProviderKind>));
+    await settle(tester);
+    expect(requests, isEmpty);
+    await tester.tap(find.text(compatible).last);
+    await settle(tester);
+    expect(requests, isEmpty, reason: 'nothing is asked until the user leaves the field');
+  });
+
+  testWidgets('editing the address drops the old list and ignores a late reply for it', (tester) async {
+    await AiSettingsRepository(db, keys).save(
+      const AiProviderConfig(kind: AiProviderKind.openaiCompatible, model: 'm', baseUrl: 'https://old.example.test/v1'),
+      apiKey: 'sk-old',
+    );
+    final slow = Completer<http.Response>();
+    await pumpPage(
+      tester,
+      const AiProviderScreen(),
+      overrides: [
+        aiSettingsRepositoryProvider.overrideWithValue(
+          AiSettingsRepository(
+            db,
+            keys,
+            httpClient: MockClient((req) {
+              requests.add(req);
+              return slow.future;
+            }),
+          ),
+        ),
+      ],
+    );
+    await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https://new.example.test/v1');
+    await settle(tester);
+    slow.complete(_models(_claude));
+    await settle(tester);
+    expect(find.byTooltip('Choose a model'), findsNothing, reason: "the old address's list no longer applies");
+    expect(find.text('The model name exactly as your provider lists it'), findsOneWidget);
+  });
+
+  testWidgets('Save and Test wait for a complete address', (tester) async {
+    await pump(tester, (_) => _models(_claude));
+    await chooseProvider(tester, compatible);
+    await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https//api.example.test/v1');
+    await tester.enterText(find.widgetWithText(TextField, 'Model'), 'm');
+    await settle(tester);
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Save')).onPressed, isNull);
+    await tester.enterText(find.widgetWithText(TextField, 'API base URL'), 'https://api.example.test/v1');
+    await settle(tester);
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Save')).onPressed, isNotNull);
+  });
 }

@@ -123,8 +123,13 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
   bool get _keySaved => _hasKey && AiSettingsRepository.sameService(_saved, _config);
 
   void _onBaseUrlFocus() {
-    // Focus also leaves the field while the screen closes.
+    // Only the user leaving the field finishes the address. Focus also goes
+    // when the screen closes, a menu or sheet opens on top, or the app or
+    // browser tab goes to the background, any of them part-way through.
     if (!mounted || _baseUrlFocus.hasFocus) return;
+    if (ModalRoute.isCurrentOf(context) == false) return;
+    final life = WidgetsBinding.instance.lifecycleState;
+    if (life != null && life != AppLifecycleState.resumed) return;
     final origin = _origin;
     if (_key.text.trim().isNotEmpty) {
       if (_keyOrigin == null) {
@@ -322,7 +327,8 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     final text = Theme.of(context).textTheme;
-    final ready = _model.text.trim().isNotEmpty && (!_kind.customEndpoint || _baseUrl.text.trim().startsWith('http'));
+    // The same rule as the saved client: a model, and an http(s):// address.
+    final ready = _config.isComplete;
     return Scaffold(
       appBar: AppBar(
         title: Text(l10n.aiProvider),
@@ -381,9 +387,17 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
                               textDirection: TextDirection.ltr,
                               onChanged: (_) {
                                 // The list loads when the field is left; a pending
-                                // key-field timer must not fire with a half-typed host.
+                                // key-field timer must not fire with a half-typed host,
+                                // and the old address's list (or a late reply for it)
+                                // no longer applies.
                                 _modelsDebounce?.cancel();
-                                setState(() {});
+                                _modelsRequest++;
+                                setState(() {
+                                  _models = null;
+                                  _modelsError = null;
+                                  _modelsNeedKey = false;
+                                  _modelsLoading = false;
+                                });
                               },
                               decoration: InputDecoration(labelText: l10n.aiBaseUrl, hintText: l10n.aiBaseUrlHint),
                             ),

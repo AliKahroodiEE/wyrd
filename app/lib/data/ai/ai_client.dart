@@ -413,7 +413,8 @@ class AiClient {
     final http.Response res;
     try {
       // Not followed, like model lists: a redirect could carry a key header
-      // such as x-api-key to another host.
+      // such as x-api-key to another host. In browsers a redirect then fails
+      // as a network error.
       final request = http.Request('POST', url)
         ..followRedirects = false
         ..headers.addAll({'content-type': 'application/json', ...headers})
@@ -431,8 +432,9 @@ class AiClient {
   Future<Object?> _get(Uri url, Map<String, String> headers) async {
     final http.Response res;
     try {
-      // Not followed: a redirect could carry a key header such as x-api-key
-      // to another host. Browsers follow redirects themselves.
+      // Not followed on any platform: a redirect could carry a key header
+      // such as x-api-key to another host. In browsers a redirect then fails
+      // as a network error.
       final request = http.Request('GET', url)
         ..followRedirects = false
         ..headers.addAll(headers);

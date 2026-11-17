@@ -644,9 +644,10 @@ void main() {
       const anthropic = AiProviderConfig(kind: AiProviderKind.anthropic, model: 'm');
 
       await repo.save(anthropic);
-      expect(keys.value, 'sk-before-any-settings', reason: 'a first save keeps a key stored before it');
+      expect(keys.value, isNull, reason: 'a key no saved settings own is never paired with new ones');
+      await repo.save(anthropic, apiKey: 'sk-own');
       await repo.save(const AiProviderConfig(kind: AiProviderKind.anthropic, model: 'other'));
-      expect(keys.value, 'sk-before-any-settings', reason: 'same service, new model');
+      expect(keys.value, 'sk-own', reason: 'same service, new model');
       await repo.save(
         const AiProviderConfig(kind: AiProviderKind.openaiCompatible, model: 'm', baseUrl: 'https://a.example.test/v1'),
       );

@@ -153,9 +153,12 @@ void main() {
       );
       addTearDown(db.close);
       // The device belongs to owner-c, whose AI provider and key are here.
-      keys = MemoryKeyStore()..value = 'sk-c';
+      keys = MemoryKeyStore();
       ai = AiSettingsRepository(db, keys);
-      await ai.save(const AiProviderConfig(kind: AiProviderKind.anthropic, model: 'claude-opus-5-5'));
+      await ai.save(
+        const AiProviderConfig(kind: AiProviderKind.anthropic, model: 'claude-opus-5-5'),
+        apiKey: 'sk-c',
+      );
       device = SyncService(db, _NoServer(), ProgressionRepository(db));
       await device.claimFor('owner-c', email: 'c@example.test');
 
