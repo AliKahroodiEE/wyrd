@@ -109,6 +109,9 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          # Pinned: newer stable releases deprecate package:flutter/material.dart
+          # (moving to material_ui), which fails `flutter analyze --fatal-infos`.
+          flutter-version: 3.47.7
           channel: stable
           cache: true
 
