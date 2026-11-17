@@ -1305,6 +1305,48 @@ class AppLocalizationsFa extends AppLocalizations {
   String get aiModelHint => 'نام مدل، دقیقاً همان‌طور که سرویس‌دهنده‌ات نوشته است';
 
   @override
+  String get aiModelsLoading => 'در حال دریافت مدل‌های سرویس‌دهنده…';
+
+  @override
+  String aiModelsCount(int count, String countText) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$countText مدل در دسترس است — یکی را از فهرست انتخاب کن یا نامش را بنویس.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get aiModelsNeedKey => 'کلید API را وارد کن تا مدل‌های این سرویس‌دهنده را ببینی.';
+
+  @override
+  String aiModelsFailed(String reason) {
+    return 'فهرست مدل‌ها دریافت نشد: $reason. هنوز می‌توانی نام مدل را خودت بنویسی.';
+  }
+
+  @override
+  String get aiModelsNoList => 'این سرویس فهرست مدل‌هایش را ارائه نمی‌دهد؛ نام مدل را بنویس.';
+
+  @override
+  String get aiModelsEmpty => 'سرویس‌دهنده برای این کلید هیچ مدلی فهرست نکرد.';
+
+  @override
+  String get aiModelNotListed => 'این نام در فهرست سرویس‌دهنده نیست. بررسی‌اش کن یا یکی را از فهرست انتخاب کن.';
+
+  @override
+  String get aiModelChoose => 'انتخاب مدل';
+
+  @override
+  String get aiModelSearch => 'جست‌وجوی مدل';
+
+  @override
+  String get aiModelNoMatch => 'هیچ مدلی با این جست‌وجو پیدا نشد.';
+
+  @override
+  String get aiModelsReload => 'دریافت دوباره‌ی فهرست';
+
+  @override
   String get aiApiKey => 'کلید API';
 
   @override

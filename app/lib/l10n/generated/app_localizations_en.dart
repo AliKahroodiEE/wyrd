@@ -1317,6 +1317,49 @@ class AppLocalizationsEn extends AppLocalizations {
   String get aiModelHint => 'The model name exactly as your provider lists it';
 
   @override
+  String get aiModelsLoading => 'Loading the provider\'s models…';
+
+  @override
+  String aiModelsCount(int count, String countText) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$countText models available — choose one from the list, or type a name.',
+      one: '$countText model available — choose it from the list, or type a name.',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get aiModelsNeedKey => 'Enter your API key to see this provider\'s models.';
+
+  @override
+  String aiModelsFailed(String reason) {
+    return 'Couldn\'t load the model list: $reason. You can still type the name.';
+  }
+
+  @override
+  String get aiModelsNoList => 'This service doesn\'t share a model list, so type the model\'s name.';
+
+  @override
+  String get aiModelsEmpty => 'The provider listed no models for this key.';
+
+  @override
+  String get aiModelNotListed => 'This name isn\'t in the provider\'s list. Check it, or choose one from the list.';
+
+  @override
+  String get aiModelChoose => 'Choose a model';
+
+  @override
+  String get aiModelSearch => 'Search models';
+
+  @override
+  String get aiModelNoMatch => 'No model matches your search.';
+
+  @override
+  String get aiModelsReload => 'Load the list again';
+
+  @override
   String get aiApiKey => 'API key';
 
   @override

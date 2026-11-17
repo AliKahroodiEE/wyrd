@@ -2462,6 +2462,72 @@ abstract class AppLocalizations {
   /// **'The model name exactly as your provider lists it'**
   String get aiModelHint;
 
+  /// No description provided for @aiModelsLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading the provider\'s models…'**
+  String get aiModelsLoading;
+
+  /// No description provided for @aiModelsCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{{countText} model available — choose it from the list, or type a name.} other{{countText} models available — choose one from the list, or type a name.}}'**
+  String aiModelsCount(int count, String countText);
+
+  /// No description provided for @aiModelsNeedKey.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter your API key to see this provider\'s models.'**
+  String get aiModelsNeedKey;
+
+  /// No description provided for @aiModelsFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load the model list: {reason}. You can still type the name.'**
+  String aiModelsFailed(String reason);
+
+  /// No description provided for @aiModelsNoList.
+  ///
+  /// In en, this message translates to:
+  /// **'This service doesn\'t share a model list, so type the model\'s name.'**
+  String get aiModelsNoList;
+
+  /// No description provided for @aiModelsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'The provider listed no models for this key.'**
+  String get aiModelsEmpty;
+
+  /// No description provided for @aiModelNotListed.
+  ///
+  /// In en, this message translates to:
+  /// **'This name isn\'t in the provider\'s list. Check it, or choose one from the list.'**
+  String get aiModelNotListed;
+
+  /// No description provided for @aiModelChoose.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a model'**
+  String get aiModelChoose;
+
+  /// No description provided for @aiModelSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Search models'**
+  String get aiModelSearch;
+
+  /// No description provided for @aiModelNoMatch.
+  ///
+  /// In en, this message translates to:
+  /// **'No model matches your search.'**
+  String get aiModelNoMatch;
+
+  /// No description provided for @aiModelsReload.
+  ///
+  /// In en, this message translates to:
+  /// **'Load the list again'**
+  String get aiModelsReload;
+
   /// No description provided for @aiApiKey.
   ///
   /// In en, this message translates to:

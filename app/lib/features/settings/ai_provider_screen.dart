@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -49,6 +51,17 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
   String? _status;
   bool _statusOk = false;
 
+  /// The provider's model list: null until fetched, or when there is no key
+  /// to ask with ([_modelsNeedKey]) or the fetch failed ([_modelsError]).
+  List<AiModelInfo>? _models;
+  bool _modelsLoading = false;
+  bool _modelsNeedKey = false;
+  AiException? _modelsError;
+  Timer? _modelsDebounce;
+
+  /// Only the latest fetch may update the screen.
+  int _modelsRequest = 0;
+
   static const _defaultModels = {AiProviderKind.anthropic: 'claude-opus-5-5'};
 
   @override
@@ -78,10 +91,88 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
       _hasKey = hasKey;
       _loaded = true;
     });
+    unawaited(_loadModels());
+  }
+
+  /// Fetches the model list once typing pauses.
+  void _scheduleModels() {
+    _modelsDebounce?.cancel();
+    _modelsDebounce = Timer(const Duration(milliseconds: 800), () => unawaited(_loadModels()));
+  }
+
+  Future<void> _loadModels() async {
+    _modelsDebounce?.cancel();
+    final request = ++_modelsRequest;
+    final config = _config;
+    if (config.kind.customEndpoint && !config.effectiveBaseUrl.startsWith(RegExp('https?://'))) {
+      setState(() {
+        _models = null;
+        _modelsError = null;
+        _modelsNeedKey = false;
+        _modelsLoading = false;
+      });
+      return;
+    }
+    setState(() {
+      _modelsLoading = true;
+      _modelsError = null;
+      _modelsNeedKey = false;
+    });
+    List<AiModelInfo>? models;
+    AiException? error;
+    try {
+      models = await ref.read(aiSettingsRepositoryProvider).listModels(config, apiKey: _key.text);
+    } on AiException catch (e) {
+      error = e;
+    }
+    if (!mounted || request != _modelsRequest) return;
+    setState(() {
+      _modelsLoading = false;
+      _models = models;
+      _modelsError = error;
+      _modelsNeedKey = error == null && models == null;
+    });
+  }
+
+  /// The service answered but has no model list to give, so asking again
+  /// won't help.
+  bool get _modelsUnsupported {
+    final e = _modelsError;
+    return e != null &&
+        (e.kind == AiErrorKind.badResponse || (e.kind == AiErrorKind.http && (e.status == 404 || e.status == 405)));
+  }
+
+  /// What the model field says about the list.
+  String _modelHelp(AppLocalizations l10n) {
+    final models = _models;
+    final error = _modelsError;
+    if (_modelsLoading) return l10n.aiModelsLoading;
+    if (error != null) return _modelsUnsupported ? l10n.aiModelsNoList : l10n.aiModelsFailed(aiErrorText(l10n, error));
+    if (_modelsNeedKey) return l10n.aiModelsNeedKey;
+    if (models == null) return l10n.aiModelHint;
+    if (models.isEmpty) return l10n.aiModelsEmpty;
+    final current = _model.text.trim().replaceFirst(RegExp('^models/'), '');
+    if (current.isNotEmpty && !models.any((m) => m.id == current)) return l10n.aiModelNotListed;
+    return l10n.aiModelsCount(models.length, ref.fmt(context).number(models.length));
+  }
+
+  Future<void> _pickModel() async {
+    final models = _models;
+    if (models == null || models.isEmpty) return;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (_) => _ModelPicker(models: models, current: _model.text.trim()),
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _model.text = picked);
   }
 
   @override
   void dispose() {
+    _modelsDebounce?.cancel();
     _baseUrl.dispose();
     _model.dispose();
     _key.dispose();
@@ -175,13 +266,19 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
                               for (final k in AiProviderKind.values)
                                 DropdownMenuItem(value: k, child: Text(aiProviderLabel(l10n, k))),
                             ],
-                            onChanged: (k) => setState(() {
-                              if (k == null) return;
-                              if (_model.text.trim().isEmpty || _model.text == _defaultModels[_kind]) {
-                                _model.text = _defaultModels[k] ?? '';
-                              }
-                              _kind = k;
-                            }),
+                            onChanged: (k) {
+                              if (k == null || k == _kind) return;
+                              setState(() {
+                                if (_model.text.trim().isEmpty || _model.text == _defaultModels[_kind]) {
+                                  _model.text = _defaultModels[k] ?? '';
+                                }
+                                _kind = k;
+                                // A key belongs to one service; never send it to another.
+                                _key.clear();
+                                _models = null;
+                              });
+                              unawaited(_loadModels());
+                            },
                           ),
                           if (_kind.customEndpoint) ...[
                             const SizedBox(height: AppSpace.md),
@@ -189,7 +286,10 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
                               controller: _baseUrl,
                               keyboardType: TextInputType.url,
                               textDirection: TextDirection.ltr,
-                              onChanged: (_) => setState(() {}),
+                              onChanged: (_) {
+                                setState(() {});
+                                _scheduleModels();
+                              },
                               decoration: InputDecoration(labelText: l10n.aiBaseUrl, hintText: l10n.aiBaseUrlHint),
                             ),
                           ],
@@ -198,7 +298,32 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
                             controller: _model,
                             textDirection: TextDirection.ltr,
                             onChanged: (_) => setState(() {}),
-                            decoration: InputDecoration(labelText: l10n.aiModel, helperText: l10n.aiModelHint),
+                            decoration: InputDecoration(
+                              labelText: l10n.aiModel,
+                              helperText: _modelHelp(l10n),
+                              helperMaxLines: 3,
+                              suffixIcon: _modelsLoading
+                                  ? const Padding(
+                                      padding: EdgeInsetsDirectional.all(AppSpace.md),
+                                      child: SizedBox.square(
+                                        dimension: 18,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      ),
+                                    )
+                                  : (_models?.isNotEmpty ?? false)
+                                  ? IconButton(
+                                      tooltip: l10n.aiModelChoose,
+                                      icon: const Icon(Icons.arrow_drop_down),
+                                      onPressed: _pickModel,
+                                    )
+                                  : _modelsError != null && !_modelsUnsupported
+                                  ? IconButton(
+                                      tooltip: l10n.aiModelsReload,
+                                      icon: const Icon(Icons.refresh),
+                                      onPressed: _loadModels,
+                                    )
+                                  : null,
+                            ),
                           ),
                           const SizedBox(height: AppSpace.md),
                           TextField(
@@ -207,6 +332,7 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
                             autocorrect: false,
                             enableSuggestions: false,
                             textDirection: TextDirection.ltr,
+                            onChanged: (_) => _scheduleModels(),
                             decoration: InputDecoration(
                               labelText: l10n.aiApiKey,
                               helperText: _hasKey ? l10n.aiApiKeySaved : null,
@@ -253,6 +379,85 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
                 ),
               ),
             ),
+    );
+  }
+}
+
+/// A searchable list of the provider's models; pops the chosen id.
+class _ModelPicker extends StatefulWidget {
+  const _ModelPicker({required this.models, required this.current});
+
+  final List<AiModelInfo> models;
+  final String current;
+
+  @override
+  State<_ModelPicker> createState() => _ModelPickerState();
+}
+
+class _ModelPickerState extends State<_ModelPicker> {
+  final _search = TextEditingController();
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final query = _search.text.trim().toLowerCase();
+    final shown = query.isEmpty
+        ? widget.models
+        : [
+            for (final m in widget.models)
+              if (m.id.toLowerCase().contains(query) || m.label.toLowerCase().contains(query)) m,
+          ];
+    final current = widget.current.replaceFirst(RegExp('^models/'), '');
+    return Padding(
+      padding: EdgeInsetsDirectional.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: SizedBox(
+        height: MediaQuery.sizeOf(context).height * 0.75,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsetsDirectional.fromSTEB(AppSpace.lg, 0, AppSpace.lg, AppSpace.sm),
+              child: Text(l10n.aiModelChoose, style: Theme.of(context).textTheme.titleMedium),
+            ),
+            Padding(
+              padding: const EdgeInsetsDirectional.symmetric(horizontal: AppSpace.lg),
+              child: TextField(
+                controller: _search,
+                autocorrect: false,
+                enableSuggestions: false,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(prefixIcon: const Icon(Icons.search), hintText: l10n.aiModelSearch),
+              ),
+            ),
+            const SizedBox(height: AppSpace.sm),
+            Expanded(
+              child: shown.isEmpty
+                  ? Center(child: Text(l10n.aiModelNoMatch))
+                  : ListView.builder(
+                      itemCount: shown.length,
+                      itemBuilder: (context, i) {
+                        final m = shown[i];
+                        final selected = m.id == current;
+                        return ListTile(
+                          selected: selected,
+                          // Model names are Latin identifiers; keep them left to right in RTL.
+                          title: Text(m.label, textDirection: TextDirection.ltr),
+                          subtitle: m.label == m.id ? null : Text(m.id, textDirection: TextDirection.ltr),
+                          trailing: selected ? const Icon(Icons.check) : null,
+                          onTap: () => Navigator.of(context).pop(m.id),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
