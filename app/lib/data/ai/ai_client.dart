@@ -412,7 +412,13 @@ class AiClient {
   Future<Map<String, Object?>> _post(Uri url, Map<String, String> headers, Map<String, Object?> body) async {
     final http.Response res;
     try {
-      res = await _http.post(url, headers: {'content-type': 'application/json', ...headers}, body: jsonEncode(body));
+      // Not followed, like model lists: a redirect could carry a key header
+      // such as x-api-key to another host.
+      final request = http.Request('POST', url)
+        ..followRedirects = false
+        ..headers.addAll({'content-type': 'application/json', ...headers})
+        ..body = jsonEncode(body);
+      res = await http.Response.fromStream(await _http.send(request));
     } on Object {
       // Offline, DNS, TLS or a browser CORS block.
       throw const AiException(AiErrorKind.network);

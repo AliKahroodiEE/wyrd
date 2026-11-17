@@ -578,6 +578,28 @@ void main() {
       expect(calls, 10);
     });
 
+    test('completions are sent without following redirects', () async {
+      late http.BaseRequest seen;
+      final ai = AiClient(
+        const AiProviderConfig(
+          kind: AiProviderKind.anthropicCompatible,
+          model: 'm',
+          baseUrl: 'https://llm.example.test',
+        ),
+        'k',
+        httpClient: MockClient((req) async {
+          seen = req;
+          return http.Response('', 303, headers: {'location': 'https://elsewhere.example.test/'});
+        }),
+      );
+      await expectLater(
+        ai.complete(system: 's', user: 'u'),
+        throwsA(isA<AiException>().having((e) => e.status, 'status', 303)),
+      );
+      expect(seen.followRedirects, isFalse);
+      expect(seen.headers['x-api-key'], 'k');
+    });
+
     test('model lists are fetched without following redirects', () async {
       late http.BaseRequest seen;
       final ai = AiClient(
