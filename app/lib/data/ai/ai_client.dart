@@ -26,6 +26,10 @@ enum AiProviderKind {
   static AiProviderKind? parse(Object? v) => AiProviderKind.values.asNameMap()[v];
 }
 
+/// A model id without Gemini's `models/` prefix, so `models/gemini-x` and
+/// `gemini-x` compare equal wherever ids are matched.
+String bareModelId(String id) => id.trim().replaceFirst(RegExp('^models/'), '');
+
 /// Non-secret provider settings. The API key is stored separately in the
 /// platform's secure storage and never synced.
 @immutable
@@ -185,7 +189,7 @@ class AiClient {
       ],
       if (structured) 'response_format': {'type': 'json_object'},
     };
-    final json = await _post(url, {'authorization': 'Bearer $_apiKey'}, body);
+    final json = await _post(url, {if (_apiKey.isNotEmpty) 'authorization': 'Bearer $_apiKey'}, body);
     final choices = json['choices'];
     if (choices is! List || choices.isEmpty || choices.first is! Map) {
       throw const AiException(AiErrorKind.badResponse);
@@ -204,7 +208,7 @@ class AiClient {
   /// no output-token cap, because thinking models count their reasoning
   /// against it and could cut the answer short.
   Future<String> _gemini(String system, String user, {required bool structured}) async {
-    final model = config.model.trim().replaceFirst(RegExp(r'^models/'), '');
+    final model = bareModelId(config.model);
     final url = Uri.parse('${config.effectiveBaseUrl}/models/${Uri.encodeComponent(model)}:generateContent');
     final body = <String, Object?>{
       'systemInstruction': {
@@ -246,7 +250,7 @@ class AiClient {
   }
 
   Map<String, String> get _anthropicHeaders => {
-    'x-api-key': _apiKey,
+    if (_apiKey.isNotEmpty) 'x-api-key': _apiKey,
     'anthropic-version': anthropicVersion,
     // Required for calls made directly from a browser (CORS).
     if (_isWeb) 'anthropic-dangerous-direct-browser-access': 'true',
@@ -347,7 +351,9 @@ class AiClient {
         final name = _text(m['name']);
         final methods = m['supportedGenerationMethods'];
         if (name == null || (methods is List && !methods.contains('generateContent'))) continue;
-        models.add(AiModelInfo(name.replaceFirst(RegExp('^models/'), ''), displayName: _text(m['displayName'])));
+        final id = bareModelId(name);
+        if (_geminiNotForText.hasMatch(id)) continue;
+        models.add(AiModelInfo(id, displayName: _text(m['displayName'])));
       }
       final next = _text(json['nextPageToken']);
       if (next == null) break;
@@ -363,6 +369,10 @@ class AiClient {
     r'embedding|whisper|tts|transcri|realtime|audio|image|dall-e|sora|moderation|babbage|davinci|instruct'
     r'|computer-use|deep-research|codex|-pro\b',
   );
+
+  /// Gemini models that answer with speech or images rather than text,
+  /// although the list says they support generateContent.
+  static final _geminiNotForText = RegExp(r'-tts\b|native-audio|image');
 
   /// Entries a compatible service marks as unable to chat, such as
   /// Mistral's capability flags or Together's model types.
@@ -415,7 +425,12 @@ class AiClient {
   Future<Object?> _get(Uri url, Map<String, String> headers) async {
     final http.Response res;
     try {
-      res = await _http.get(url, headers: headers);
+      // Not followed: a redirect could carry a key header such as x-api-key
+      // to another host. Browsers follow redirects themselves.
+      final request = http.Request('GET', url)
+        ..followRedirects = false
+        ..headers.addAll(headers);
+      res = await http.Response.fromStream(await _http.send(request));
     } on Object {
       throw const AiException(AiErrorKind.network);
     }

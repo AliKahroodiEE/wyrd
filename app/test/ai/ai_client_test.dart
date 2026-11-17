@@ -553,4 +553,127 @@ void main() {
       expect(sent.where((k) => k == 'Bearer sk-one'), isEmpty);
     });
   });
+
+  group('model list safety', () {
+    test('paging stops after ten pages', () async {
+      var calls = 0;
+      final ai = AiClient(
+        const AiProviderConfig(kind: AiProviderKind.anthropic, model: ''),
+        'k',
+        httpClient: MockClient((req) async {
+          calls++;
+          return http.Response(
+            jsonEncode({
+              'data': [
+                {'id': 'model-$calls'},
+              ],
+              'has_more': true,
+              'last_id': 'model-$calls',
+            }),
+            200,
+          );
+        }),
+      );
+      expect(await ai.listModels(), hasLength(10));
+      expect(calls, 10);
+    });
+
+    test('model lists are fetched without following redirects', () async {
+      late http.BaseRequest seen;
+      final ai = AiClient(
+        const AiProviderConfig(kind: AiProviderKind.anthropic, model: ''),
+        'k',
+        httpClient: MockClient((req) async {
+          seen = req;
+          return http.Response('', 302, headers: {'location': 'https://elsewhere.example.test/'});
+        }),
+      );
+      await expectLater(ai.listModels(), throwsA(isA<AiException>().having((e) => e.status, 'status', 302)));
+      expect(seen.followRedirects, isFalse);
+    });
+
+    test('Gemini lists skip speech, live-audio and image models', () async {
+      final ai = AiClient(
+        const AiProviderConfig(kind: AiProviderKind.gemini, model: ''),
+        'g',
+        httpClient: MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'models': [
+                for (final name in ['gemini-x', 'gemini-x-preview-tts', 'gemini-x-native-audio', 'gemini-x-image'])
+                  {
+                    'name': 'models/$name',
+                    'supportedGenerationMethods': ['generateContent'],
+                  },
+              ],
+            }),
+            200,
+          ),
+        ),
+      );
+      expect((await ai.listModels()).map((m) => m.id), ['gemini-x']);
+    });
+
+    test('saving another service without a new key drops the old key', () async {
+      final db = AppDatabase(DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
+      addTearDown(db.close);
+      final keys = MemoryKeyStore()..value = 'sk-before-any-settings';
+      final repo = AiSettingsRepository(db, keys);
+      const anthropic = AiProviderConfig(kind: AiProviderKind.anthropic, model: 'm');
+
+      await repo.save(anthropic);
+      expect(keys.value, 'sk-before-any-settings', reason: 'a first save keeps a key stored before it');
+      await repo.save(const AiProviderConfig(kind: AiProviderKind.anthropic, model: 'other'));
+      expect(keys.value, 'sk-before-any-settings', reason: 'same service, new model');
+      await repo.save(
+        const AiProviderConfig(kind: AiProviderKind.openaiCompatible, model: 'm', baseUrl: 'https://a.example.test/v1'),
+      );
+      expect(keys.value, isNull, reason: 'another service never inherits the key');
+      await repo.save(
+        const AiProviderConfig(kind: AiProviderKind.openaiCompatible, model: 'm', baseUrl: 'https://a.example.test/v1'),
+        apiKey: 'sk-a',
+      );
+      await repo.save(
+        const AiProviderConfig(kind: AiProviderKind.openaiCompatible, model: 'm', baseUrl: 'https://b.example.test/v1'),
+      );
+      expect(keys.value, isNull, reason: 'another address is another service');
+    });
+
+    test('custom services may run without a key, and then send no auth header', () async {
+      final db = AppDatabase(DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
+      addTearDown(db.close);
+      late http.Request seen;
+      final repo = AiSettingsRepository(
+        db,
+        MemoryKeyStore(),
+        httpClient: MockClient((req) async {
+          seen = req;
+          return http.Response(
+            jsonEncode({
+              'choices': [
+                {
+                  'finish_reason': 'stop',
+                  'message': {'content': jsonEncode(_proposal)},
+                },
+              ],
+            }),
+            200,
+          );
+        }),
+      );
+      await repo.save(const AiProviderConfig(kind: AiProviderKind.anthropic, model: 'm'));
+      expect(await repo.client(), isNull, reason: 'official providers need a key');
+      await repo.save(
+        const AiProviderConfig(
+          kind: AiProviderKind.openaiCompatible,
+          model: 'llama3',
+          baseUrl: 'http://localhost:11434/v1',
+        ),
+      );
+      final client = await repo.client();
+      expect(client, isNotNull);
+      await AiEvaluator(client!).evaluate(_input);
+      expect(seen.headers.containsKey('authorization'), isFalse);
+    });
+  });
 }

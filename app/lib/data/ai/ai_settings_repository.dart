@@ -60,12 +60,27 @@ class AiSettingsRepository {
 
   Future<bool> hasKey() async => ((await _keys.read()) ?? '').isNotEmpty;
 
-  /// Saves the provider; a null or empty [apiKey] keeps the stored key.
+  /// Whether [a] and [b] are the same service: the same kind at the same
+  /// address. A key belongs to exactly one service.
+  static bool sameService(AiProviderConfig? a, AiProviderConfig b) =>
+      a != null && a.kind == b.kind && a.effectiveBaseUrl == b.effectiveBaseUrl;
+
+  /// Saves the provider. A null or empty [apiKey] keeps the stored key for
+  /// the same service only: moving to another service without a new key
+  /// deletes the old one, so it can't be sent where it doesn't belong. The
+  /// key is settled before the settings are written, so a failure can't
+  /// leave new settings paired with the old key.
   Future<void> save(AiProviderConfig config, {String? apiKey}) async {
+    final previous = await this.config();
+    final key = apiKey?.trim() ?? '';
+    if (key.isNotEmpty) {
+      await _keys.write(key);
+    } else if (previous != null && !sameService(previous, config)) {
+      await _keys.delete();
+    }
     await _db
         .into(_db.keyValues)
         .insertOnConflictUpdate(KeyValuesCompanion.insert(key: _configKey, value: jsonEncode(config.toJson())));
-    if (apiKey != null && apiKey.trim().isNotEmpty) await _keys.write(apiKey.trim());
   }
 
   Future<void> clear() async {
@@ -82,7 +97,7 @@ class AiSettingsRepository {
     var key = apiKey?.trim() ?? '';
     if (key.isEmpty) {
       final saved = await this.config();
-      if (saved != null && saved.kind == config.kind && saved.effectiveBaseUrl == config.effectiveBaseUrl) {
+      if (sameService(saved, config)) {
         try {
           key = (await _keys.read())?.trim() ?? '';
         } on Object {
@@ -99,11 +114,19 @@ class AiSettingsRepository {
     }
   }
 
-  /// A ready client, or null when no complete provider and key are set.
+  /// A ready client, or null when no complete provider is set, or when an
+  /// official provider has no key. Custom services may run without one
+  /// (local servers such as Ollama need none).
   Future<AiClient?> client() async {
     final c = await config();
-    final key = await _keys.read();
-    if (c == null || !c.isComplete || key == null || key.isEmpty) return null;
+    if (c == null || !c.isComplete) return null;
+    String key;
+    try {
+      key = (await _keys.read())?.trim() ?? '';
+    } on Object {
+      key = '';
+    }
+    if (key.isEmpty && !c.kind.customEndpoint) return null;
     return AiClient(c, key, httpClient: _http);
   }
 }
