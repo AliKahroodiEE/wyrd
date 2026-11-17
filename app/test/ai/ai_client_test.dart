@@ -699,4 +699,184 @@ void main() {
       expect(seen.headers.containsKey('authorization'), isFalse);
     });
   });
+
+  group('why a provider refused', () {
+    Future<(AiException, int)> failure(
+      AiProviderKind kind,
+      int status,
+      Object body, {
+      String key = 'sk-secret-123',
+    }) async {
+      var calls = 0;
+      final ai = AiClient(
+        AiProviderConfig(kind: kind, model: 'm', baseUrl: 'https://llm.example.test/v1'),
+        key,
+        httpClient: MockClient((_) async {
+          calls++;
+          // Bytes, so non-Latin-1 text such as an emoji survives.
+          return http.Response.bytes(utf8.encode(body is String ? body : jsonEncode(body)), status);
+        }),
+      );
+      try {
+        await ai.complete(system: 's', user: 'u', schema: const {'type': 'object'});
+      } on AiException catch (e) {
+        return (e, calls);
+      }
+      fail('expected an AiException');
+    }
+
+    test('region blocks are named as such, not as a bad key, and are not retried', () async {
+      final (openai, _) = await failure(AiProviderKind.openai, 403, {
+        'error': {
+          'code': 'unsupported_country_region_territory',
+          'message': 'Country, region, or territory not supported',
+          'type': 'request_forbidden',
+        },
+      });
+      expect(openai.kind, AiErrorKind.region);
+      expect(openai.detail, 'Country, region, or territory not supported');
+
+      final (gemini, geminiCalls) = await failure(AiProviderKind.gemini, 400, {
+        'error': {
+          'code': 400,
+          'message': 'User location is not supported for the API use.',
+          'status': 'FAILED_PRECONDITION',
+        },
+      });
+      expect(gemini.kind, AiErrorKind.region);
+      expect(geminiCalls, 1, reason: 'asking again without JSON mode would not help');
+
+      final (anthropic, _) = await failure(AiProviderKind.anthropic, 403, {
+        'type': 'error',
+        'error': {'type': 'forbidden', 'message': 'Request not allowed'},
+      });
+      expect(anthropic.kind, AiErrorKind.region);
+
+      final others = <(int, Object)>[
+        (
+          400,
+          {'message': 'Access to Anthropic models is not allowed from unsupported countries, regions, or territories.'},
+        ),
+        (
+          403,
+          {
+            'error': {'message': 'This model is not available in your region.', 'code': 403},
+          },
+        ),
+        (403, 'error code: 1009'),
+        (451, ''),
+      ];
+      for (final (status, body) in others) {
+        expect(
+          (await failure(AiProviderKind.openaiCompatible, status, body)).$1.kind,
+          AiErrorKind.region,
+          reason: '$body',
+        );
+      }
+
+      final (plain, plainCalls) = await failure(AiProviderKind.openaiCompatible, 400, {
+        'error': {'message': 'bad request'},
+      });
+      expect((plain.kind, plainCalls), (AiErrorKind.http, 2), reason: 'an ordinary 400 is retried without JSON mode');
+    });
+
+    test("a real bad key stays a bad key, with the provider's words", () async {
+      final (anthropic, _) = await failure(AiProviderKind.anthropic, 401, {
+        'type': 'error',
+        'error': {'type': 'authentication_error', 'message': 'invalid x-api-key'},
+      });
+      expect((anthropic.kind, anthropic.detail), (AiErrorKind.auth, 'invalid x-api-key'));
+
+      final (permission, _) = await failure(AiProviderKind.anthropic, 403, {
+        'type': 'error',
+        'error': {
+          'type': 'permission_error',
+          'message': 'Your API key does not have permission to use the specified resource.',
+        },
+      });
+      expect(permission.kind, AiErrorKind.auth);
+
+      final (gemini, _) = await failure(AiProviderKind.gemini, 400, {
+        'error': {
+          'code': 400,
+          'message': 'API key not valid. Please pass a valid API key.',
+          'status': 'INVALID_ARGUMENT',
+          'details': [
+            {'reason': 'API_KEY_INVALID'},
+          ],
+        },
+      });
+      expect(gemini.kind, AiErrorKind.auth);
+
+      final (cors, _) = await failure(AiProviderKind.anthropic, 401, {
+        'type': 'error',
+        'error': {'type': 'authentication_error', 'message': 'CORS requests are not allowed for this Organization.'},
+      });
+      expect(cors.kind, AiErrorKind.network, reason: "Anthropic says this isn't the key's fault");
+    });
+
+    test('provider messages are one short line, never contain the key, and stay out of logs', () async {
+      final (echoed, _) = await failure(AiProviderKind.openaiCompatible, 404, {
+        'error': {'message': 'The model `m` does not exist\nfor key sk-secret-123.   Check it.'},
+      });
+      expect((echoed.kind, echoed.status), (AiErrorKind.http, 404));
+      expect(echoed.detail, 'The model `m` does not exist for key …. Check it.');
+      expect(echoed.toString(), isNot(contains('does not exist')));
+
+      final (listed, _) = await failure(AiProviderKind.openaiCompatible, 404, [
+        {
+          'error': {'code': 404, 'message': 'models/m is not found', 'status': 'NOT_FOUND'},
+        },
+      ]);
+      expect(
+        listed.detail,
+        'models/m is not found',
+        reason: "Google's OpenAI-compatible endpoint wraps errors in a list",
+      );
+
+      expect(
+        (await failure(AiProviderKind.openaiCompatible, 422, {'detail': 'Unknown model'})).$1.detail,
+        'Unknown model',
+      );
+      expect((await failure(AiProviderKind.openaiCompatible, 503, {'message': 'Overloaded'})).$1.detail, 'Overloaded');
+      expect((await failure(AiProviderKind.openaiCompatible, 502, '<html>Bad gateway</html>')).$1.detail, isNull);
+
+      final (long, _) = await failure(AiProviderKind.openaiCompatible, 500, {'error': 'x' * 500});
+      expect(long.detail!.length, 200);
+
+      // An emoji (two code units) straddling the cut is dropped whole.
+      final (emoji, _) = await failure(AiProviderKind.openaiCompatible, 500, {
+        'error': '${'x' * 198}\u{1F6AB}${'y' * 50}',
+      });
+      expect(emoji.detail, '${'x' * 198}…');
+    });
+
+    test('a slow retry without JSON mode ends in a network error, not a raw timeout', () async {
+      var calls = 0;
+      final ai = AiClient(
+        const AiProviderConfig(
+          kind: AiProviderKind.openaiCompatible,
+          model: 'm',
+          baseUrl: 'https://llm.example.test/v1',
+        ),
+        'k',
+        httpClient: MockClient((_) async {
+          calls++;
+          if (calls == 1) return http.Response('{}', 400);
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          return http.Response('{}', 200);
+        }),
+      );
+      await expectLater(
+        ai.complete(
+          system: 's',
+          user: 'u',
+          schema: const {'type': 'object'},
+          timeout: const Duration(milliseconds: 50),
+        ),
+        throwsA(isA<AiException>().having((e) => e.kind, 'kind', AiErrorKind.network)),
+      );
+      expect(calls, 2);
+    });
+  });
 }
