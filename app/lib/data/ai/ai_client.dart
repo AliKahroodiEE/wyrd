@@ -79,12 +79,19 @@ class AiModelInfo {
   }
 }
 
-enum AiErrorKind { auth, rateLimited, network, refused, badResponse, http }
+/// Why a call failed. [region]: the provider refused the request, most
+/// likely because it doesn't serve the country it came from (OpenAI,
+/// Anthropic and Google refuse several, Iran among them).
+enum AiErrorKind { auth, rateLimited, network, refused, badResponse, http, region }
 
 class AiException implements Exception {
-  const AiException(this.kind, [this.status]);
+  const AiException(this.kind, [this.status, this.detail]);
   final AiErrorKind kind;
   final int? status;
+
+  /// The provider's own explanation, shortened for display, with the key
+  /// removed. Kept out of [toString] so it never reaches logs.
+  final String? detail;
 
   @override
   String toString() => 'AiException(${kind.name}${status == null ? '' : ', $status'})';
@@ -122,7 +129,12 @@ class AiClient {
       return await _send(system, user, schema, maxTokens, structured: structured).timeout(timeout);
     } on AiException catch (e) {
       if (structured && e.kind == AiErrorKind.http && e.status == 400) {
-        return _send(system, user, schema, maxTokens, structured: false).timeout(timeout);
+        // A timeout here isn't caught by the sibling clause below.
+        try {
+          return await _send(system, user, schema, maxTokens, structured: false).timeout(timeout);
+        } on TimeoutException {
+          throw const AiException(AiErrorKind.network);
+        }
       }
       rethrow;
     } on TimeoutException {
@@ -446,19 +458,83 @@ class AiClient {
   }
 
   Object? _decode(http.Response res) {
-    if (res.statusCode == 401 || res.statusCode == 403) throw AiException(AiErrorKind.auth, res.statusCode);
-    if (res.statusCode == 429) throw AiException(AiErrorKind.rateLimited, res.statusCode);
-    // Google answers a wrong key with 400 rather than 401.
-    if (res.statusCode == 400 &&
-        config.kind.geminiProtocol &&
-        utf8.decode(res.bodyBytes, allowMalformed: true).contains('API_KEY_INVALID')) {
-      throw AiException(AiErrorKind.auth, res.statusCode);
+    final status = res.statusCode;
+    if (status < 200 || status >= 300) {
+      final body = utf8.decode(res.bodyBytes, allowMalformed: true);
+      final detail = _providerMessage(body);
+      // First: a region block also arrives as 400 or 403, and would
+      // otherwise read as a bad key.
+      if (_regionBlocked(status, body)) throw AiException(AiErrorKind.region, status, detail);
+      // Anthropic refuses browser calls for some organisations; Anthropic
+      // says this isn't a problem with the key.
+      if (status == 401 && body.contains('CORS requests are not allowed')) {
+        throw AiException(AiErrorKind.network, status, detail);
+      }
+      if (status == 401 || status == 403) throw AiException(AiErrorKind.auth, status, detail);
+      if (status == 429) throw AiException(AiErrorKind.rateLimited, status, detail);
+      // Google answers a wrong key with 400 rather than 401.
+      if (status == 400 && config.kind.geminiProtocol && body.contains('API_KEY_INVALID')) {
+        throw AiException(AiErrorKind.auth, status, detail);
+      }
+      throw AiException(AiErrorKind.http, status, detail);
     }
-    if (res.statusCode < 200 || res.statusCode >= 300) throw AiException(AiErrorKind.http, res.statusCode);
     try {
       return jsonDecode(utf8.decode(res.bodyBytes));
     } on FormatException {
       throw const AiException(AiErrorKind.badResponse);
     }
+  }
+
+  /// How providers say a request was refused because of where it came
+  /// from: OpenAI (403 unsupported_country_region_territory), Google (400
+  /// "User location is not supported"), Anthropic through clouds (400
+  /// "unsupported countries, regions, or territories"), OpenRouter (403 "not
+  /// available in your region") and Cloudflare's country ban (403 "error
+  /// code: 1009"). Anthropic's own API answers 403 forbidden "Request not
+  /// allowed", which can also mean a closed workspace; the message says
+  /// "most likely".
+  static final _regionMarkers = RegExp(
+    r'unsupported_country_region_territory|User location is not supported'
+    r'|unsupported countries, regions,? or territories|not available in your (region|country)'
+    r'|error code: 1009|banned the country or region',
+    caseSensitive: false,
+  );
+
+  static bool _regionBlocked(int status, String body) =>
+      status == 451 ||
+      ((status == 400 || status == 403) && _regionMarkers.hasMatch(body)) ||
+      (status == 403 && body.contains('"forbidden"') && body.contains('Request not allowed'));
+
+  /// The provider's error message, if the body has one: `error.message`
+  /// (OpenAI, Anthropic, Gemini and most compatible services), the same
+  /// inside a list (Google's OpenAI-compatible endpoint), a bare `error`
+  /// string, or a top-level `message` or `detail`. One line, at most 200
+  /// characters, never containing the key.
+  String? _providerMessage(String body) {
+    Object? json;
+    try {
+      json = jsonDecode(body);
+    } on FormatException {
+      return null;
+    }
+    final message = switch (json) {
+      {'error': {'message': final String m}} => m,
+      [{'error': {'message': final String m}}, ...] => m,
+      {'error': final String m} => m,
+      {'message': final String m} => m,
+      {'detail': final String m} => m,
+      _ => null,
+    };
+    if (message == null) return null;
+    var text = message.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final key = _apiKey.trim();
+    if (key.length >= 4) text = text.replaceAll(key, '…');
+    if (text.isEmpty) return null;
+    if (text.length <= 200) return text;
+    // Never cut a character in half: an emoji is two code units.
+    var end = 199;
+    final last = text.codeUnitAt(end - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) end--;
+    return '${text.substring(0, end)}…';
   }
 }

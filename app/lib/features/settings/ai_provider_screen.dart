@@ -31,7 +31,16 @@ String aiErrorText(AppLocalizations l10n, AiException e) => switch (e.kind) {
   AiErrorKind.refused => l10n.aiErrRefused,
   AiErrorKind.badResponse => l10n.aiErrBadResponse,
   AiErrorKind.http => l10n.aiErrHttp('${e.status ?? ''}'),
+  AiErrorKind.region => l10n.aiErrRegion,
 };
+
+/// [aiErrorText] plus the provider's own words when it gave any, isolated
+/// so an English message stays readable inside Persian text.
+String aiErrorReport(AppLocalizations l10n, AiException e) {
+  final reason = aiErrorText(l10n, e);
+  final detail = e.detail;
+  return detail == null ? reason : l10n.aiErrWithDetail(reason, '\u2068$detail\u2069');
+}
 
 /// Connect your own AI provider: Anthropic, OpenAI, Google Gemini or any
 /// service speaking the Anthropic or OpenAI protocol.
@@ -119,6 +128,19 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
     return uri.origin;
   }
 
+  /// A browser blocks a plain http:// address from an https page, except
+  /// this device's own; that is the likely cause of a network failure then.
+  bool get _insecureAddressOnWeb {
+    if (!kIsWeb || !Uri.base.isScheme('https') || !_kind.customEndpoint) return false;
+    final uri = Uri.tryParse(_config.effectiveBaseUrl);
+    if (uri == null || !uri.isScheme('http')) return false;
+    return !const {'localhost', '127.0.0.1', '::1'}.contains(uri.host);
+  }
+
+  /// The short reason for [e], naming the blocked http:// address on the web.
+  String _reason(AppLocalizations l10n, AiException e) =>
+      e.kind == AiErrorKind.network && _insecureAddressOnWeb ? l10n.aiErrInsecureAddress : aiErrorText(l10n, e);
+
   /// The stored key belongs to the service in the form.
   bool get _keySaved => _hasKey && AiSettingsRepository.sameService(_saved, _config);
 
@@ -203,7 +225,9 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
     final error = _modelsError;
     if (_modelsLoading) return l10n.aiModelsLoading;
     if (error != null) {
-      if (!_modelsUnsupported) return l10n.aiModelsFailed(aiErrorText(l10n, error));
+      // Typing a name won't help when the provider refuses the country.
+      if (error.kind == AiErrorKind.region) return l10n.aiModelsFailedRegion(aiErrorText(l10n, error));
+      if (!_modelsUnsupported) return l10n.aiModelsFailed(_reason(l10n, error));
       // A custom address that answers without a list is usually the wrong address.
       return _kind.customEndpoint ? l10n.aiModelsNoListAtAddress : l10n.aiModelsNoList;
     }
@@ -311,7 +335,17 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
       _statusOk = true;
     } on AiException catch (e) {
       // A keyless custom service that wants a key: say so, not "rejected".
-      _status = l10n.aiTestFailed(e.kind == AiErrorKind.auth && !_keySaved ? l10n.aiErrNoKey : aiErrorText(l10n, e));
+      // A region block gets one step the user can take; everything else
+      // shows the provider's own words too.
+      _status = e.kind == AiErrorKind.auth && !_keySaved
+          ? l10n.aiTestFailed(l10n.aiErrNoKey)
+          : e.kind == AiErrorKind.region
+          ? l10n.aiTestFailedRegion(aiErrorReport(l10n, e))
+          : l10n.aiTestFailed(
+              e.kind == AiErrorKind.network && _insecureAddressOnWeb
+                  ? l10n.aiErrInsecureAddress
+                  : aiErrorReport(l10n, e),
+            );
       _statusOk = false;
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -401,6 +435,11 @@ class _AiProviderScreenState extends ConsumerState<AiProviderScreen> {
                               },
                               decoration: InputDecoration(labelText: l10n.aiBaseUrl, hintText: l10n.aiBaseUrlHint),
                             ),
+                            if (kIsWeb) ...[
+                              const SizedBox(height: AppSpace.sm),
+                              // Local and self-hosted services must allow this site (CORS).
+                              Text(l10n.aiWebCorsNote('\u2066${Uri.base.origin}\u2069'), style: text.bodySmall),
+                            ],
                           ],
                           const SizedBox(height: AppSpace.md),
                           TextField(

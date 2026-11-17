@@ -1326,6 +1326,11 @@ class AppLocalizationsFa extends AppLocalizations {
   }
 
   @override
+  String aiModelsFailedRegion(String reason) {
+    return 'فهرست مدل‌ها دریافت نشد: $reason.';
+  }
+
+  @override
   String get aiModelsNoList => 'این سرویس فهرست مدل‌هایش را ارائه نمی‌دهد؛ نام مدل را بنویس.';
 
   @override
@@ -1361,6 +1366,11 @@ class AppLocalizationsFa extends AppLocalizations {
       'در مرورگر، کلید در فضای رمزگذاری‌شده‌ی همین مرورگر نگه داشته می‌شود. بهتر است از کلیدی با سقف هزینه استفاده کنی.';
 
   @override
+  String aiWebCorsNote(String origin) {
+    return 'در مرورگر، سرویس باید درخواست‌های $origin را بپذیرد. در Ollama مقدار OLLAMA_ORIGINS=$origin را تنظیم کن و در LM Studio گزینه‌ی CORS را روشن کن.';
+  }
+
+  @override
   String get aiTest => 'آزمایش اتصال';
 
   @override
@@ -1371,6 +1381,11 @@ class AppLocalizationsFa extends AppLocalizations {
   @override
   String aiTestFailed(String reason) {
     return 'اتصال برقرار نشد: $reason';
+  }
+
+  @override
+  String aiTestFailedRegion(String reason) {
+    return 'اتصال برقرار نشد: $reason. از فهرست «سرویس‌دهنده» یک سرویس سازگار انتخاب کن که در کشورت کار کند.';
   }
 
   @override
@@ -1397,6 +1412,19 @@ class AppLocalizationsFa extends AppLocalizations {
   }
 
   @override
+  String get aiErrRegion =>
+      'سرویس‌دهنده درخواست را نپذیرفت؛ به احتمال زیاد چون به کشور یا منطقه‌ای که از آن وصل می‌شوی خدمات نمی‌دهد';
+
+  @override
+  String aiErrWithDetail(String reason, String detail) {
+    return '$reason (پیام سرویس‌دهنده: «$detail»)';
+  }
+
+  @override
+  String get aiErrInsecureAddress =>
+      'مرورگرها نشانی‌های ساده‌ی http:// را از این سایت https مسدود می‌کنند؛ از نشانی https استفاده کن';
+
+  @override
   String get aiRemove => 'حذف سرویس‌دهنده و کلید';
 
   @override
@@ -1407,6 +1435,11 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get aiFallbackUsed => 'به هوش مصنوعی‌ات دسترسی نبود، پس قواعد داخلی به کار رفت.';
+
+  @override
+  String aiFallbackUsedBecause(String reason) {
+    return 'از هوش مصنوعی‌ات نشد استفاده کرد ($reason)، پس قواعد داخلی به کار رفت.';
+  }
 
   @override
   String get sectionNotifications => 'اعلان‌ها';

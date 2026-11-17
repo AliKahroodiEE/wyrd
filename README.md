@@ -327,7 +327,11 @@ plans, with no credit card anywhere.
 OpenAI, Google Gemini or compatible account under *Settings → AI → Your own AI*. Once the key is in,
 the app lists the provider's models to choose from when the provider offers a list, so you usually
 don't have to type a model name. The key stays in
-the device's secure storage and goes only to that provider. A server-side key
+the device's secure storage and goes only to that provider. OpenAI, Anthropic and Google don't serve
+some countries, Iran among them. From those, the app says so and quotes the provider instead of calling
+the key wrong; a compatible service that works there is the way in. In the browser, a local or
+self-hosted service must also accept requests from the site (Ollama: `OLLAMA_ORIGINS`; LM Studio:
+turn on CORS). A server-side key
 (`ANTHROPIC_API_KEY`) is supported but not required.
 
 ## Development

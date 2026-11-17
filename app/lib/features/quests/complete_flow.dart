@@ -16,6 +16,7 @@ import '../../design/components/motion.dart';
 import '../../design/tokens.dart';
 import '../../l10n/content.dart';
 import '../rewards/reward_view.dart';
+import '../settings/ai_provider_screen.dart' show aiErrorText;
 import 'quest_limits.dart';
 import 'quest_timer.dart';
 
@@ -334,6 +335,14 @@ Future<EvaluationProposal?> _askOwnAi(
         outputLanguage: profile?.aiLocale ?? ref.read(regionalProvider).locale.languageCode,
       ),
     );
+  } on AiException catch (e) {
+    // Say why, so a refused key or a provider that doesn't serve the user's
+    // country isn't mistaken for a passing hiccup. The provider's own words
+    // stay in Settings, under Test connection.
+    messenger.showSnackBar(
+      SnackBar(content: Text(l10n.aiFallbackUsedBecause(aiErrorText(l10n, e))), duration: const Duration(seconds: 8)),
+    );
+    return null;
   } on Object {
     messenger.showSnackBar(SnackBar(content: Text(l10n.aiFallbackUsed)));
     return null;
