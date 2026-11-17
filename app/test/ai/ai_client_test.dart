@@ -231,4 +231,326 @@ void main() {
     await repo.clear();
     expect(await repo.hasKey(), isFalse);
   });
+
+  group('model lists', () {
+    AiClient clientFor(AiProviderConfig config, MockClient http, {String key = 'k', bool isWeb = false}) =>
+        AiClient(config, key, httpClient: http, isWeb: isWeb);
+
+    test('Anthropic: documented headers, every page, newest first', () async {
+      final seen = <http.Request>[];
+      final ai = clientFor(
+        const AiProviderConfig(kind: AiProviderKind.anthropic, model: ''),
+        MockClient((req) async {
+          seen.add(req);
+          final firstPage = req.url.queryParameters['after_id'] == null;
+          return http.Response(
+            jsonEncode(
+              firstPage
+                  ? {
+                      'data': [
+                        {'id': 'model-b', 'display_name': 'Model B', 'created_at': '2026-09-01T00:00:00Z'},
+                        {'id': 'model-c', 'display_name': 'Model C', 'created_at': '2026-08-01T00:00:00Z'},
+                      ],
+                      'has_more': true,
+                      'last_id': 'model-c',
+                    }
+                  : {
+                      'data': [
+                        {'id': 'model-a', 'display_name': 'Model A', 'created_at': '2026-10-01T00:00:00Z'},
+                      ],
+                      'has_more': false,
+                      'last_id': 'model-a',
+                    },
+            ),
+            200,
+          );
+        }),
+        key: 'sk-test',
+        isWeb: true,
+      );
+      final models = await ai.listModels();
+      expect(models.map((m) => m.id), ['model-a', 'model-b', 'model-c']);
+      expect(models.first.label, 'Model A');
+      expect(seen, hasLength(2));
+      expect(seen.first.method, 'GET');
+      expect(seen.first.url.toString(), 'https://api.anthropic.com/v1/models?limit=1000');
+      expect(seen.last.url.queryParameters['after_id'], 'model-c');
+      expect(seen.first.headers['x-api-key'], 'sk-test');
+      expect(seen.first.headers['anthropic-version'], AiClient.anthropicVersion);
+      expect(seen.first.headers['anthropic-dangerous-direct-browser-access'], 'true');
+    });
+
+    test('Anthropic-compatible: a base URL that already ends in /v1', () async {
+      late Uri url;
+      final ai = clientFor(
+        const AiProviderConfig(
+          kind: AiProviderKind.anthropicCompatible,
+          model: '',
+          baseUrl: 'https://llm.example.test/anthropic/v1/',
+        ),
+        MockClient((req) async {
+          url = req.url;
+          return http.Response(
+            jsonEncode({
+              'data': [
+                {'id': 'compatible-model'},
+              ],
+              'has_more': false,
+            }),
+            200,
+          );
+        }),
+      );
+      final models = await ai.listModels();
+      expect(url.path, '/anthropic/v1/models');
+      expect(models.single.label, 'compatible-model', reason: 'no display name: the id is shown');
+    });
+
+    test('OpenAI: bearer key, chat models only, newest first, no repeats', () async {
+      late http.Request seen;
+      final ai = clientFor(
+        const AiProviderConfig(kind: AiProviderKind.openai, model: ''),
+        MockClient((req) async {
+          seen = req;
+          return http.Response(
+            jsonEncode({
+              'object': 'list',
+              'data': [
+                {'id': 'gpt-old', 'created': 1600000000},
+                {'id': 'text-embedding-3-large', 'created': 1700000000},
+                {'id': 'gpt-new', 'created': 1790000000},
+                {'id': 'whisper-1', 'created': 1650000000},
+                {'id': 'gpt-new-mini-tts', 'created': 1780000000},
+                {'id': 'gpt-image-2', 'created': 1781000000},
+                {'id': 'o9-pro', 'created': 1785000000},
+                {'id': 'gpt-new', 'created': 1790000000},
+              ],
+            }),
+            200,
+          );
+        }),
+        key: 'sk-o',
+      );
+      final models = await ai.listModels();
+      expect(seen.url.toString(), 'https://api.openai.com/v1/models');
+      expect(seen.headers['authorization'], 'Bearer sk-o');
+      expect(models.map((m) => m.id), ['gpt-new', 'gpt-old']);
+    });
+
+    test('OpenAI-compatible: display names, bare lists, Ollama, and no key for local servers', () async {
+      Future<List<AiModelInfo>> list(Object body, {String key = ''}) async {
+        late http.Request seen;
+        final models = await clientFor(
+          const AiProviderConfig(
+            kind: AiProviderKind.openaiCompatible,
+            model: '',
+            baseUrl: 'http://localhost:11434/v1',
+          ),
+          MockClient((req) async {
+            seen = req;
+            return http.Response(jsonEncode(body), 200);
+          }),
+          key: key,
+        ).listModels();
+        expect(seen.url.toString(), 'http://localhost:11434/v1/models');
+        expect(seen.headers.containsKey('authorization'), key.isNotEmpty);
+        return models;
+      }
+
+      final openRouter = await list({
+        'data': [
+          {'id': 'vendor/model-a', 'name': 'Vendor: Model A'},
+          {
+            'id': 'mistral-embed',
+            'capabilities': {'completion_chat': false},
+          },
+        ],
+      }, key: 'or-key');
+      expect(openRouter.single.id, 'vendor/model-a');
+      expect(openRouter.single.label, 'Vendor: Model A');
+
+      final together = await list([
+        {'id': 't/chat-model', 'display_name': 'Chat Model', 'type': 'chat'},
+        {'id': 't/embedder', 'type': 'embedding'},
+      ]);
+      expect(together.map((m) => m.id), ['t/chat-model']);
+
+      final ollama = await list({
+        'models': [
+          {'name': 'llama3:latest', 'model': 'llama3:latest'},
+        ],
+      });
+      expect(ollama.single.id, 'llama3:latest');
+      expect(ollama.single.displayName, isNull);
+    });
+
+    test('Gemini: key in a header, text models only, every page', () async {
+      final seen = <http.Request>[];
+      final ai = clientFor(
+        const AiProviderConfig(kind: AiProviderKind.gemini, model: ''),
+        MockClient((req) async {
+          seen.add(req);
+          return http.Response(
+            jsonEncode(
+              req.url.queryParameters['pageToken'] == null
+                  ? {
+                      'models': [
+                        {
+                          'name': 'models/gemini-x',
+                          'displayName': 'Gemini X',
+                          'supportedGenerationMethods': ['generateContent', 'countTokens'],
+                        },
+                        {
+                          'name': 'models/text-embedder',
+                          'supportedGenerationMethods': ['embedContent'],
+                        },
+                      ],
+                      'nextPageToken': 'page-2',
+                    }
+                  : {
+                      'models': [
+                        {
+                          'name': 'models/gemini-y',
+                          'supportedGenerationMethods': ['generateContent'],
+                        },
+                      ],
+                    },
+            ),
+            200,
+          );
+        }),
+        key: 'g-key',
+      );
+      final models = await ai.listModels();
+      expect(models.map((m) => m.id), ['gemini-x', 'gemini-y']);
+      expect(models.first.label, 'Gemini X');
+      expect(seen, hasLength(2));
+      expect(seen.first.url.path, '/v1beta/models');
+      expect(seen.first.url.queryParameters, {'pageSize': '1000'});
+      expect(seen.last.url.queryParameters['pageToken'], 'page-2');
+      expect(seen.every((r) => r.headers['x-goog-api-key'] == 'g-key'), isTrue);
+      expect(
+        seen.any((r) => r.url.queryParameters.containsKey('key')),
+        isFalse,
+        reason: 'the key never goes in the URL',
+      );
+    });
+
+    test('errors map to clear kinds', () async {
+      Future<AiException> failure(AiProviderKind kind, http.Response Function() respond) async {
+        final ai = clientFor(
+          AiProviderConfig(kind: kind, model: '', baseUrl: 'https://llm.example.test/v1'),
+          MockClient((_) async => respond()),
+        );
+        try {
+          await ai.listModels();
+        } on AiException catch (e) {
+          return e;
+        }
+        fail('expected an AiException');
+      }
+
+      final badKey = await failure(
+        AiProviderKind.gemini,
+        () => http.Response(
+          jsonEncode({
+            'error': {
+              'code': 400,
+              'status': 'INVALID_ARGUMENT',
+              'details': [
+                {'reason': 'API_KEY_INVALID'},
+              ],
+            },
+          }),
+          400,
+        ),
+      );
+      expect(badKey.kind, AiErrorKind.auth, reason: 'Google answers a wrong key with 400');
+      expect((await failure(AiProviderKind.openai, () => http.Response('', 401))).kind, AiErrorKind.auth);
+      expect((await failure(AiProviderKind.openai, () => http.Response('', 429))).kind, AiErrorKind.rateLimited);
+      final missing = await failure(AiProviderKind.anthropicCompatible, () => http.Response('not found', 404));
+      expect((missing.kind, missing.status), (AiErrorKind.http, 404));
+      expect(
+        (await failure(AiProviderKind.openaiCompatible, () => http.Response('<html>', 200))).kind,
+        AiErrorKind.badResponse,
+      );
+      expect(
+        (await failure(AiProviderKind.openaiCompatible, () => http.Response('{"ok": true}', 200))).kind,
+        AiErrorKind.badResponse,
+      );
+      final offline = clientFor(
+        const AiProviderConfig(kind: AiProviderKind.openai, model: ''),
+        MockClient((_) async => throw const SocketException('offline')),
+      );
+      expect(offline.listModels, throwsA(isA<AiException>().having((e) => e.kind, 'kind', AiErrorKind.network)));
+    });
+
+    test('settings ask with the typed key, or the saved key only for the same service', () async {
+      final db = AppDatabase(DatabaseConnection(NativeDatabase.memory(), closeStreamsSynchronously: true));
+      addTearDown(db.close);
+      final keys = MemoryKeyStore();
+      final sent = <String?>[];
+      final repo = AiSettingsRepository(
+        db,
+        keys,
+        httpClient: MockClient((req) async {
+          final key = req.headers['x-api-key'] ?? req.headers['authorization'];
+          sent.add(key);
+          if (req.url.host == 'needs-key.example.test' && key == null) return http.Response('', 401);
+          return http.Response(
+            jsonEncode({
+              'data': [
+                {'id': '${req.url.host}-model'},
+              ],
+              'has_more': false,
+            }),
+            200,
+          );
+        }),
+      );
+      const anthropic = AiProviderConfig(kind: AiProviderKind.anthropic, model: 'm');
+      const openai = AiProviderConfig(kind: AiProviderKind.openai, model: '');
+
+      expect(await repo.listModels(anthropic), isNull, reason: 'no key to ask with');
+      expect(sent, isEmpty);
+
+      await repo.save(anthropic, apiKey: 'sk-ant');
+      expect((await repo.listModels(anthropic))!.single.id, 'api.anthropic.com-model');
+      expect(sent.last, 'sk-ant');
+
+      expect(await repo.listModels(openai), isNull, reason: 'the saved key belongs to another service');
+      expect(sent, hasLength(1));
+
+      expect((await repo.listModels(openai, apiKey: ' sk-oa '))!.single.id, 'api.openai.com-model');
+      expect(sent.last, 'Bearer sk-oa');
+
+      await repo.save(
+        const AiProviderConfig(
+          kind: AiProviderKind.openaiCompatible,
+          model: 'm',
+          baseUrl: 'https://one.example.test/v1',
+        ),
+        apiKey: 'sk-one',
+      );
+      const other = AiProviderConfig(
+        kind: AiProviderKind.openaiCompatible,
+        model: '',
+        baseUrl: 'https://needs-key.example.test/v1',
+      );
+      expect(await repo.listModels(other), isNull, reason: 'a different address never gets the saved key');
+      expect(sent.last, isNull);
+
+      const local = AiProviderConfig(
+        kind: AiProviderKind.openaiCompatible,
+        model: '',
+        baseUrl: 'http://localhost:11434/v1',
+      );
+      expect(
+        (await repo.listModels(local))!.single.id,
+        'localhost-model',
+        reason: 'local servers are tried without a key',
+      );
+      expect(sent.where((k) => k == 'Bearer sk-one'), isEmpty);
+    });
+  });
 }

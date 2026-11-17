@@ -73,6 +73,32 @@ class AiSettingsRepository {
     await _keys.delete();
   }
 
+  /// The models [config]'s provider lists. Asks with [apiKey], or when that
+  /// is empty with the saved key, but only if the saved provider is the
+  /// same service, so a key never reaches a provider it wasn't made for.
+  /// Null when there is no key to ask with. Custom services are tried
+  /// without one, because local servers often need none.
+  Future<List<AiModelInfo>?> listModels(AiProviderConfig config, {String? apiKey}) async {
+    var key = apiKey?.trim() ?? '';
+    if (key.isEmpty) {
+      final saved = await this.config();
+      if (saved != null && saved.kind == config.kind && saved.effectiveBaseUrl == config.effectiveBaseUrl) {
+        try {
+          key = (await _keys.read())?.trim() ?? '';
+        } on Object {
+          key = '';
+        }
+      }
+    }
+    if (key.isEmpty && !config.kind.customEndpoint) return null;
+    try {
+      return await AiClient(config, key, httpClient: _http).listModels();
+    } on AiException catch (e) {
+      if (key.isEmpty && e.kind == AiErrorKind.auth) return null;
+      rethrow;
+    }
+  }
+
   /// A ready client, or null when no complete provider and key are set.
   Future<AiClient?> client() async {
     final c = await config();
